@@ -1,0 +1,415 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TonePreset {
+  friendly
+  neutral
+  business
+  expert
+  warm
+  premium
+}
+
+enum ProductImportStatus {
+  previewed
+  completed
+  failed
+}
+
+enum ReviewProcessStatus {
+  generated
+  inserted
+  posted
+  skipped
+  failed
+  canceled
+}
+
+enum UserRole {
+  user
+  admin
+  superadmin
+}
+
+enum WalletCurrency {
+  RUB
+}
+
+enum WalletLedgerEntryType {
+  topup
+  debit_review_generation
+  refund
+  manual_adjustment
+  promo_credit
+}
+
+enum WalletLedgerReferenceType {
+  payment
+  review_log
+  admin_adjustment
+}
+
+enum PaymentProvider {
+  ozon_bank
+}
+
+enum PaymentStatus {
+  created
+  pending
+  paid
+  failed
+  canceled
+}
+
+enum PaymentWebhookStatus {
+  received
+  processed
+  ignored
+  failed
+}
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  passwordHash  String
+  name          String
+  role          UserRole       @default(user)
+  isActive      Boolean        @default(true)
+  lastLoginAt   DateTime?
+  defaultTone   TonePreset     @default(friendly)
+  toneNotes     String?
+  brandRules    String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  apiKeys       ApiKey[]
+  imports       ProductImport[]
+  importDrafts  ProductImportDraft[]
+  products      Product[]
+  reviewLogs    ReviewLog[]
+  usageLogs     UsageLog[]
+  wallet        Wallet?
+  walletEntries WalletLedgerEntry[]
+  payments      Payment[]
+  reviewCosts   ReviewCost[]
+  promptLogs    PromptLog[]
+  adminAuditLogs           AdminAuditLog[] @relation("AdminAuditLogActor")
+  createdExchangeRates     ExchangeRate[]  @relation("ExchangeRateCreator")
+  createdServiceTiers      ServiceTier[]   @relation("ServiceTierCreator")
+  updatedServiceTiers      ServiceTier[]   @relation("ServiceTierUpdater")
+}
+
+model ApiKey {
+  id          String   @id @default(cuid())
+  userId      String
+  keyPrefix   String
+  keyHash     String   @unique
+  name        String?
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model ProductImport {
+  id                String              @id @default(cuid())
+  userId            String
+  originalFilename  String
+  sourceType        String              @default("ozon_xlsx")
+  status            ProductImportStatus @default(previewed)
+  selectedExtra1    String?
+  selectedExtra2    String?
+  importedRows      Int                 @default(0)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products          Product[]
+
+  @@index([userId])
+}
+
+model ProductImportDraft {
+  id               String   @id @default(cuid())
+  userId           String
+  draftToken       String   @unique
+  originalFilename String
+  sourceType       String   @default("ozon_xlsx")
+  headersJson      Json
+  rowsJson         Json
+  isCommitted      Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isCommitted, createdAt])
+}
+
+model Product {
+  id             String     @id @default(cuid())
+  userId         String
+  importId       String?
+  article        String
+  name           String
+  brand          String?
+  model          String?
+  groupKey       String?
+  kit            String?
+  annotation     String?
+  tonePreset     TonePreset @default(friendly)
+  toneNotes      String?
+  productRules   String?
+  extra1Name     String?
+  extra1Value    String?
+  extra2Name     String?
+  extra2Value    String?
+  searchText     String
+  rawRowJson     Json
+  isActive       Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  import         ProductImport? @relation(fields: [importId], references: [id], onDelete: SetNull)
+  reviewLogs     ReviewLog[]
+
+  @@index([userId])
+  @@index([userId, article])
+  @@unique([userId, article])
+}
+
+model ReviewLog {
+  id                   String              @id @default(cuid())
+  userId               String
+  productId            String?
+  source               String              @default("ozon-extension")
+  reviewExternalId     String
+  rating               Int
+  authorName           String?
+  reviewText           String?
+  reviewDate           String?
+  detectedProductName  String?
+  detectedProductMeta  Json?
+  promptMode           String              @default("advanced")
+  promptVersion        String              @default("v1")
+  generatedReply       String
+  finalReply           String?
+  status               ReviewProcessStatus @default(generated)
+  errorText            String?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  user                 User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product              Product?            @relation(fields: [productId], references: [id], onDelete: SetNull)
+  usageLogs            UsageLog[]
+  reviewCost           ReviewCost?
+  promptLogs           PromptLog[]
+
+  @@index([userId])
+  @@index([reviewExternalId])
+}
+
+model UsageLog {
+  id                String   @id @default(cuid())
+  userId            String
+  reviewLogId       String?
+  model             String
+  promptTokens      Int
+  completionTokens  Int
+  totalTokens       Int
+  estimatedCost     Decimal  @db.Decimal(10, 6)
+  latencyMs         Int
+  createdAt         DateTime @default(now())
+
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewLog         ReviewLog? @relation(fields: [reviewLogId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+}
+
+model Wallet {
+  id           String         @id @default(cuid())
+  userId       String         @unique
+  currency     WalletCurrency @default(RUB)
+  balanceMinor Int            @default(0)
+  holdMinor    Int            @default(0)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ledgerEntries WalletLedgerEntry[]
+}
+
+model WalletLedgerEntry {
+  id            String                    @id @default(cuid())
+  userId        String
+  walletId      String
+  type          WalletLedgerEntryType
+  amountMinor   Int
+  currency      WalletCurrency            @default(RUB)
+  referenceType WalletLedgerReferenceType?
+  referenceId   String?
+  description   String?
+  metaJson      Json?
+  createdAt     DateTime                  @default(now())
+
+  user          User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet        Wallet                    @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([walletId, createdAt])
+  @@index([referenceType, referenceId])
+}
+
+model Payment {
+  id                    String          @id @default(cuid())
+  userId                String
+  provider              PaymentProvider @default(ozon_bank)
+  status                PaymentStatus   @default(created)
+  amountMinor           Int
+  currency              WalletCurrency  @default(RUB)
+  providerPaymentId     String?
+  providerOrderId       String?         @unique
+  paymentUrl            String?
+  successUrl            String?
+  failUrl               String?
+  rawCreateResponseJson Json?
+  rawWebhookJson        Json?
+  paidAt                DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  user                  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  webhookEvents         PaymentWebhookEvent[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model PaymentWebhookEvent {
+  id              String               @id @default(cuid())
+  paymentId       String?
+  provider        PaymentProvider      @default(ozon_bank)
+  eventType       String
+  externalEventId String
+  payloadJson     Json
+  processedAt     DateTime?
+  status          PaymentWebhookStatus @default(received)
+  createdAt       DateTime             @default(now())
+
+  payment         Payment?             @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, externalEventId])
+  @@index([paymentId])
+  @@index([provider, status, createdAt])
+}
+
+model ExchangeRate {
+  id               String   @id @default(cuid())
+  baseCurrency     String   @default("USD")
+  quoteCurrency    String   @default("RUB")
+  rate             Decimal  @db.Decimal(12, 6)
+  effectiveDate    DateTime
+  isActive         Boolean  @default(true)
+  source           String   @default("manual")
+  createdByAdminId String?
+  createdAt        DateTime @default(now())
+
+  createdByAdmin   User?    @relation("ExchangeRateCreator", fields: [createdByAdminId], references: [id], onDelete: SetNull)
+  reviewCosts      ReviewCost[]
+
+  @@index([isActive, effectiveDate])
+}
+
+model ServiceTier {
+  id                        String   @id @default(cuid())
+  code                      String   @unique
+  title                     String
+  openAiModel               String
+  inputPriceUsdPer1m        Decimal  @db.Decimal(12, 6)
+  outputPriceUsdPer1m       Decimal  @db.Decimal(12, 6)
+  cachedInputPriceUsdPer1m  Decimal? @db.Decimal(12, 6)
+  isActive                  Boolean  @default(true)
+  createdByAdminId          String?
+  updatedByAdminId          String?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  createdByAdmin            User?    @relation("ServiceTierCreator", fields: [createdByAdminId], references: [id], onDelete: SetNull)
+  updatedByAdmin            User?    @relation("ServiceTierUpdater", fields: [updatedByAdminId], references: [id], onDelete: SetNull)
+  reviewCosts               ReviewCost[]
+
+  @@index([isActive, code])
+}
+
+model ReviewCost {
+  id                String   @id @default(cuid())
+  userId            String
+  reviewLogId       String   @unique
+  serviceTierId     String
+  exchangeRateId    String
+  model             String
+  inputTokens       Int
+  outputTokens      Int
+  totalTokens       Int
+  openAiCostUsd     Decimal  @db.Decimal(14, 8)
+  usdRubRate        Decimal  @db.Decimal(12, 6)
+  openAiCostRub     Decimal  @db.Decimal(14, 8)
+  markupMultiplier  Decimal  @db.Decimal(8, 4)
+  chargedRub        Decimal  @db.Decimal(14, 8)
+  chargedMinor      Int
+  createdAt         DateTime @default(now())
+
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewLog         ReviewLog    @relation(fields: [reviewLogId], references: [id], onDelete: Cascade)
+  serviceTier       ServiceTier  @relation(fields: [serviceTierId], references: [id], onDelete: Restrict)
+  exchangeRate      ExchangeRate @relation(fields: [exchangeRateId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+}
+
+model PromptLog {
+  id                 String   @id @default(cuid())
+  userId             String
+  reviewLogId        String?
+  serviceTierCode    String
+  model              String
+  systemPrompt       String
+  assembledPrompt    String
+  generatedReply     String?
+  productContextJson Json?
+  createdAt          DateTime @default(now())
+
+  user               User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewLog          ReviewLog? @relation(fields: [reviewLogId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([reviewLogId])
+}
+
+model AdminAuditLog {
+  id          String   @id @default(cuid())
+  adminUserId String
+  action      String
+  entityType  String
+  entityId    String?
+  beforeJson  Json?
+  afterJson   Json?
+  metaJson    Json?
+  createdAt   DateTime @default(now())
+
+  adminUser   User     @relation("AdminAuditLogActor", fields: [adminUserId], references: [id], onDelete: Cascade)
+
+  @@index([adminUserId, createdAt])
+  @@index([entityType, entityId])
+}
