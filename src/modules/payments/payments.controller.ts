@@ -1,5 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
-import type { Request } from 'express';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { JwtUserPayload } from '../../common/authenticated-user.interface';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -24,15 +23,16 @@ export class PaymentsController {
 
   @UseGuards(JwtAuthGuard)
   @Get(':id')
-  getOne(@CurrentUser() user: JwtUserPayload, @Param('id') paymentId: string) {
-    return this.paymentsService.getOwn(user.sub, paymentId);
+  getOne(
+    @CurrentUser() user: JwtUserPayload,
+    @Param('id') paymentId: string,
+    @Query('refresh') refresh?: string,
+  ) {
+    return this.paymentsService.getOwn(user.sub, paymentId, refresh === '1' || refresh === 'true');
   }
 
   @Post('webhook/ozon-bank')
-  webhook(
-    @Body() body: Record<string, unknown>,
-    @Req() req: Request & { rawBody?: Buffer },
-  ) {
-    return this.paymentsService.handleWebhook(body, req.rawBody);
+  webhook(@Body() body: Record<string, unknown>) {
+    return this.paymentsService.handleWebhook(body);
   }
 }

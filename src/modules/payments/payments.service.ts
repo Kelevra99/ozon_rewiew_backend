@@ -4,7 +4,14 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { PaymentProvider, PaymentStatus, PaymentWebhookStatus, Prisma, type Payment } from '@prisma/client';
+import {
+  Payment,
+  PaymentProvider,
+  PaymentStatus,
+  PaymentWebhookStatus,
+  Prisma,
+  WalletLedgerReferenceType,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BillingService } from '../billing/billing.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
@@ -20,15 +27,25 @@ export class PaymentsService {
 
   async create(userId: string, dto: CreatePaymentDto) {
     const amountMinor = Math.round(dto.amountRub * 100);
-    if (!Number.isInteger(amountMinor) || amountMinor < 1000) {
-      throw new BadRequestException('Минимальная сумма пополнения — 10 ₽');
+    if (!Number.isFinite(amountMinor) || amountMinor <= 0) {
+      throw new BadRequestException('Сумма пополнения должна быть больше нуля');
     }
 
-    await this.billingService.getOrCreateWallet(userId);
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true },
+    });
 
-    const providerOrderId = this.generateProviderOrderId();
-    const successUrl = dto.successUrl?.trim() || process.env.PAYMENT_SUCCESS_URL?.trim() || null;
-    const failUrl = dto.failUrl?.trim() || process.env.PAYMENT_FAIL_URL?.trim() || null;
+    if (!user) {
+      throw new NotFoundException('Пользователь не найден');
+    }
+
+    const receiptEmail = dto.receiptEmail?.trim() || user.email;
+    const receiptPhone = dto.receiptPhone?.trim() || null;
+
+    if (!receiptEmail) {
+      throw new BadRequestException('Для отправки электронного чека нужно указать e-mail');
+    }
 
     const payment = await this.prisma.payment.create({
       data: {
@@ -36,26 +53,62 @@ export class PaymentsService {
         provider: PaymentProvider.ozon_bank,
         status: PaymentStatus.created,
         amountMinor,
-        providerOrderId,
+        providerOrderId: `topup_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+      },
+    });
+
+    const successUrl = this.appendPaymentId(
+      dto.successUrl || process.env.PAYMENT_SUCCESS_URL || `${this.frontendBaseUrl()}/billing/topup/success`,
+      payment.id,
+    );
+    const failUrl = this.appendPaymentId(
+      dto.failUrl || process.env.PAYMENT_FAIL_URL || `${this.frontendBaseUrl()}/billing/topup/fail`,
+      payment.id,
+    );
+    const redirectUrl = this.appendPaymentId(
+      process.env.PAYMENT_RESULT_URL || `${this.frontendBaseUrl()}/billing/topup/result`,
+      payment.id,
+    );
+    const notificationUrl = process.env.PAYMENT_NOTIFICATION_URL || `${this.backendBaseUrl()}/payments/webhook/ozon-bank`;
+
+    await this.prisma.payment.update({
+      where: { id: payment.id },
+      data: {
         successUrl,
         failUrl,
       },
     });
 
     try {
-      const provider = await this.ozonAcquiringService.createPayment(payment);
-      const normalizedCreateStatus = this.toPaymentStatus(
-        this.ozonAcquiringService.normalizeProviderPaymentStatus(provider.providerStatus),
-      );
+      const provider = await this.ozonAcquiringService.createPayment({
+        payment,
+        receiptEmail,
+        receiptPhone,
+        notificationUrl,
+        redirectUrl,
+        successUrl,
+        failUrl,
+      });
 
       const updated = await this.prisma.payment.update({
         where: { id: payment.id },
         data: {
           providerPaymentId: provider.providerPaymentId,
-          providerOrderId: provider.providerOrderId,
-          paymentUrl: provider.redirectUrl,
-          status: normalizedCreateStatus === PaymentStatus.created ? PaymentStatus.pending : normalizedCreateStatus,
-          rawCreateResponseJson: this.toNullableJsonValue(provider.rawResponse),
+          paymentUrl: provider.paymentUrl,
+          status: this.toPaymentStatus(provider.status),
+          rawCreateResponseJson: this.toNullableJsonValue({
+            ...provider.rawResponse,
+            _local: {
+              receiptEmail,
+              receiptPhone,
+              redirectUrl,
+              successUrl,
+              failUrl,
+              notificationUrl,
+              sbpPayload: provider.sbpPayload,
+              expiresAt: provider.expiresAt,
+            },
+          }),
         },
       });
 
@@ -65,9 +118,9 @@ export class PaymentsService {
         where: { id: payment.id },
         data: {
           status: PaymentStatus.failed,
-          rawCreateResponseJson: this.toNullableJsonValue({
+          rawCreateResponseJson: {
             error: error instanceof Error ? error.message : 'create_payment_failed',
-          }),
+          },
         },
       });
       throw error;
@@ -83,7 +136,7 @@ export class PaymentsService {
     return items.map((item) => this.serializePayment(item));
   }
 
-  async getOwn(userId: string, paymentId: string) {
+  async getOwn(userId: string, paymentId: string, refresh = false) {
     const payment = await this.prisma.payment.findFirst({
       where: { id: paymentId, userId },
     });
@@ -92,10 +145,11 @@ export class PaymentsService {
       throw new NotFoundException('Платёж не найден');
     }
 
-    return this.serializePayment(payment);
+    const synced = refresh ? await this.syncPaymentStatus(payment) : payment;
+    return this.serializePayment(synced);
   }
 
-  async handleWebhook(payload: Record<string, unknown>, _rawBody?: Buffer) {
+  async handleWebhook(payload: Record<string, unknown>) {
     const isValid = this.ozonAcquiringService.verifyWebhookSignature(payload);
     if (!isValid) {
       throw new UnauthorizedException('Неверная подпись webhook');
@@ -103,14 +157,16 @@ export class PaymentsService {
 
     const parsed = this.ozonAcquiringService.parseWebhook(payload);
 
-    const existingEvent = await this.prisma.paymentWebhookEvent.findUnique({
-      where: {
-        provider_externalEventId: {
-          provider: PaymentProvider.ozon_bank,
-          externalEventId: parsed.externalEventId,
-        },
-      },
-    });
+    const existingEvent = parsed.externalEventId
+      ? await this.prisma.paymentWebhookEvent.findUnique({
+          where: {
+            provider_externalEventId: {
+              provider: PaymentProvider.ozon_bank,
+              externalEventId: parsed.externalEventId,
+            },
+          },
+        })
+      : null;
 
     if (existingEvent) {
       return {
@@ -120,7 +176,7 @@ export class PaymentsService {
       };
     }
 
-    const payment = await this.findPaymentForWebhook(parsed.providerOrderId);
+    const payment = await this.findPaymentForWebhook(parsed);
 
     const event = await this.prisma.paymentWebhookEvent.create({
       data: {
@@ -150,182 +206,195 @@ export class PaymentsService {
       };
     }
 
-    if (parsed.normalizedStatus === 'paid') {
-      await this.prisma.$transaction(async (tx) => {
-        const freshPayment = await tx.payment.findUnique({ where: { id: payment.id } });
-        if (!freshPayment) {
-          throw new NotFoundException('Платёж не найден');
-        }
+    const updatedPayment = await this.applyProviderStatus(payment.id, parsed.status, parsed.rawPayload, parsed.errorMessage);
 
-        if (freshPayment.status !== PaymentStatus.paid) {
-          await tx.payment.update({
-            where: { id: payment.id },
-            data: {
-              status: PaymentStatus.paid,
-              rawWebhookJson: this.toNullableJsonValue(parsed.rawPayload),
-              paidAt: new Date(),
-            },
-          });
-
-          await this.billingService.applyTopupFromPayment(tx, {
-            userId: payment.userId,
-            paymentId: payment.id,
-            amountMinor: payment.amountMinor,
-            description: `Пополнение баланса по платежу ${payment.providerOrderId}`,
-            metaJson: {
-              provider: 'ozon-bank',
-              providerOrderId: payment.providerOrderId,
-              providerPaymentId: payment.providerPaymentId,
-              transactionUid: parsed.transactionUid,
-            },
-          });
-        }
-
-        await tx.paymentWebhookEvent.update({
-          where: { id: event.id },
-          data: {
-            status: PaymentWebhookStatus.processed,
-            processedAt: new Date(),
-            paymentId: payment.id,
-          },
-        });
-      });
-
-      return {
-        ok: true,
-        eventId: event.id,
-        paymentId: payment.id,
-        status: 'paid',
-      };
-    }
-
-    await this.prisma.$transaction(async (tx) => {
-      const freshPayment = await tx.payment.findUnique({ where: { id: payment.id } });
-      if (!freshPayment) {
-        throw new NotFoundException('Платёж не найден');
-      }
-
-      if (freshPayment.status !== PaymentStatus.paid) {
-        await tx.payment.update({
-          where: { id: payment.id },
-          data: {
-            status: this.toPaymentStatus(parsed.normalizedStatus),
-            rawWebhookJson: this.toNullableJsonValue(parsed.rawPayload),
-          },
-        });
-      }
-
-      await tx.paymentWebhookEvent.update({
-        where: { id: event.id },
-        data: {
-          status: PaymentWebhookStatus.processed,
-          processedAt: new Date(),
-          paymentId: payment.id,
-        },
-      });
+    await this.prisma.paymentWebhookEvent.update({
+      where: { id: event.id },
+      data: {
+        status: PaymentWebhookStatus.processed,
+        processedAt: new Date(),
+        paymentId: updatedPayment.id,
+      },
     });
 
     return {
       ok: true,
       eventId: event.id,
-      paymentId: payment.id,
-      status: parsed.normalizedStatus,
+      paymentId: updatedPayment.id,
+      status: updatedPayment.status,
     };
   }
 
-  private async findPaymentForWebhook(providerOrderId: string | null) {
-    if (!providerOrderId) {
-      return null;
+  private async syncPaymentStatus(payment: Payment) {
+    if (
+      payment.status === PaymentStatus.paid ||
+      payment.status === PaymentStatus.failed ||
+      payment.status === PaymentStatus.canceled ||
+      !payment.providerPaymentId
+    ) {
+      return payment;
     }
 
-    return this.prisma.payment.findFirst({
-      where: { providerOrderId },
+    try {
+      const provider = await this.ozonAcquiringService.getPaymentDetails(payment.providerPaymentId);
+      return this.applyProviderStatus(payment.id, this.toPaymentStatus(provider.status), provider.rawResponse, provider.errorMessage);
+    } catch {
+      return payment;
+    }
+  }
+
+  private async applyProviderStatus(
+    paymentId: string,
+    nextStatus: PaymentStatus,
+    rawPayload: unknown,
+    errorMessage?: string | null,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const current = await tx.payment.findUnique({ where: { id: paymentId } });
+      if (!current) {
+        throw new NotFoundException('Платёж не найден');
+      }
+
+      if (current.status === PaymentStatus.paid) {
+        return current;
+      }
+
+      if (nextStatus === PaymentStatus.paid) {
+        const existingLedger = await tx.walletLedgerEntry.findFirst({
+          where: {
+            referenceType: WalletLedgerReferenceType.payment,
+            referenceId: paymentId,
+          },
+        });
+
+        const updatedPayment = await tx.payment.update({
+          where: { id: paymentId },
+          data: {
+            status: PaymentStatus.paid,
+            rawWebhookJson: this.toNullableJsonValue({
+              rawPayload,
+              errorMessage,
+            }),
+            paidAt: current.paidAt || new Date(),
+          },
+        });
+
+        if (!existingLedger) {
+          await this.billingService.applyTopupFromPayment(tx, {
+            userId: current.userId,
+            paymentId: current.id,
+            amountMinor: current.amountMinor,
+            description: `Пополнение баланса по платежу ${current.id}`,
+            metaJson: {
+              providerPaymentId: current.providerPaymentId,
+              providerOrderId: current.providerOrderId,
+            },
+          });
+        }
+
+        return updatedPayment;
+      }
+
+  
+
+      return tx.payment.update({
+        where: { id: paymentId },
+        data: {
+          status: nextStatus,
+          rawWebhookJson: this.toNullableJsonValue({
+            rawPayload,
+            errorMessage,
+          }),
+        },
+      });
     });
   }
 
+  private async findPaymentForWebhook(parsed: {
+    paymentId: string | null;
+    providerPaymentId: string | null;
+    providerOrderId: string | null;
+  }) {
+    if (parsed.paymentId) {
+      const byId = await this.prisma.payment.findUnique({ where: { id: parsed.paymentId } });
+      if (byId) {
+        return byId;
+      }
+    }
+
+    if (parsed.providerPaymentId) {
+      const byProviderPaymentId = await this.prisma.payment.findFirst({
+        where: { providerPaymentId: parsed.providerPaymentId },
+      });
+      if (byProviderPaymentId) {
+        return byProviderPaymentId;
+      }
+    }
+
+    if (parsed.providerOrderId) {
+      const byProviderOrderId = await this.prisma.payment.findFirst({
+        where: { providerOrderId: parsed.providerOrderId },
+      });
+      if (byProviderOrderId) {
+        return byProviderOrderId;
+      }
+    }
+
+    return null;
+  }
+
   private serializePayment(payment: Payment) {
-    const createPayload = this.readJsonRecord(payment.rawCreateResponseJson);
-    const paymentDetails = createPayload ? this.pickObject(createPayload, 'paymentDetails') : null;
-    const sbp = paymentDetails ? this.pickObject(paymentDetails, 'sbp') : null;
-
-    const providerStatus =
-      this.pickFirstString(paymentDetails, ['status']) ||
-      this.pickFirstString(createPayload, ['status']) ||
-      null;
-
-    const sbpPayload = this.pickFirstString(sbp, ['payload']) || null;
-    const redirectUrl = payment.paymentUrl || payment.successUrl || null;
+    const rawCreate = this.asRecord(payment.rawCreateResponseJson);
+    const rawWebhook = this.asRecord(payment.rawWebhookJson);
+    const local = rawCreate ? this.asRecord(rawCreate._local) : null;
 
     return {
       id: payment.id,
-      provider: 'ozon-bank',
+      provider: payment.provider,
       status: payment.status,
       amountMinor: payment.amountMinor,
       amountRub: payment.amountMinor / 100,
       currency: payment.currency,
-      paymentMethod: 'sbp',
       providerPaymentId: payment.providerPaymentId,
       providerOrderId: payment.providerOrderId,
-      providerStatus,
-      sbpPayload,
-      paymentUrl: this.isProbablyUrl(sbpPayload) ? sbpPayload : null,
-      redirectUrl,
+      paymentUrl: payment.paymentUrl,
+      sbpPayload: this.pickFirstString(local, ['sbpPayload']),
+      receiptEmail: this.pickFirstString(local, ['receiptEmail']),
+      receiptPhone: this.pickFirstString(local, ['receiptPhone']),
+      expiresAt: this.pickFirstString(local, ['expiresAt']),
       successUrl: payment.successUrl,
       failUrl: payment.failUrl,
-      paidAt: payment.paidAt,
+      errorMessage: this.pickFirstString(rawWebhook, ['errorMessage']) || this.pickFirstString(rawCreate, ['error']),
       createdAt: payment.createdAt,
       updatedAt: payment.updatedAt,
-      rawCreateResponseJson: payment.rawCreateResponseJson,
-      rawWebhookJson: payment.rawWebhookJson,
+      paidAt: payment.paidAt,
     };
   }
 
-  private generateProviderOrderId() {
-    return `topup_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  private toPaymentStatus(status: 'created' | 'pending' | 'paid' | 'failed' | 'canceled') {
+    const map: Record<string, PaymentStatus> = {
+      created: PaymentStatus.created,
+      pending: PaymentStatus.pending,
+      paid: PaymentStatus.paid,
+      failed: PaymentStatus.failed,
+      canceled: PaymentStatus.canceled,
+    };
+
+    return map[status] || PaymentStatus.created;
   }
 
-  private toPaymentStatus(status: string) {
-    switch (status) {
-      case 'paid':
-        return PaymentStatus.paid;
-      case 'pending':
-        return PaymentStatus.pending;
-      case 'failed':
-        return PaymentStatus.failed;
-      case 'canceled':
-        return PaymentStatus.canceled;
-      default:
-        return PaymentStatus.created;
-    }
+  private appendPaymentId(url: string, paymentId: string) {
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}paymentId=${encodeURIComponent(paymentId)}`;
   }
 
-  private isProbablyUrl(value: string | null) {
-    return typeof value === 'string' && /^https?:\/\//i.test(value);
+  private frontendBaseUrl() {
+    return process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
   }
 
-  private readJsonRecord(value: Prisma.JsonValue | null): Record<string, unknown> | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-    return value as Record<string, unknown>;
-  }
-
-  private pickObject(obj: Record<string, unknown> | null, key: string) {
-    if (!obj) return null;
-    const value = obj[key];
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
-  }
-
-  private pickFirstString(obj: Record<string, unknown> | null, keys: string[]) {
-    if (!obj) return null;
-    for (const key of keys) {
-      const value = obj[key];
-      if (typeof value === 'string' && value.trim()) return value.trim();
-      if (typeof value === 'number') return String(value);
-    }
-    return null;
+  private backendBaseUrl() {
+    const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:3001/v1';
+    return apiBaseUrl.replace(/\/v1\/?$/, '/v1');
   }
 
   private toJsonValue(value: unknown): Prisma.InputJsonValue {
@@ -340,5 +409,28 @@ export class PaymentsService {
     }
 
     return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  }
+
+  private asRecord(value: unknown) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    return value as Record<string, unknown>;
+  }
+
+  private pickFirstString(obj: Record<string, unknown> | null, keys: string[]) {
+    if (!obj) {
+      return null;
+    }
+
+    for (const key of keys) {
+      const value = obj[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value;
+      }
+    }
+
+    return null;
   }
 }
