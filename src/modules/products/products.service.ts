@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import type { JwtUserPayload } from '../../common/authenticated-user.interface';
 import { ImportCommitDto } from './dto/import-commit.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { CreateProductDto } from './dto/create-product.dto';
 import { OzonImportService } from './ozon-import.service';
 
 @Injectable()
@@ -178,7 +179,94 @@ export class ProductsService {
         extra1Value: true,
         extra2Name: true,
         extra2Value: true,
+        createdAt: true,
         updatedAt: true,
+      },
+    });
+  }
+
+  async create(userId: string, dto: CreateProductDto) {
+    const article = this.getString(dto.article);
+    const name = this.getString(dto.name);
+    const brand = this.getString(dto.brand);
+    const model = this.getString(dto.model);
+    const kit = this.getString(dto.kit);
+    const annotation = this.getString(dto.annotation);
+    const toneNotes = this.getString(dto.toneNotes);
+    const productRules = this.getString(dto.productRules);
+    const extra1Name = this.getString(dto.extra1Name);
+    const extra1Value = this.getString(dto.extra1Value);
+    const extra2Name = this.getString(dto.extra2Name);
+    const extra2Value = this.getString(dto.extra2Value);
+
+    if (!name) {
+      throw new BadRequestException('Название товара обязательно');
+    }
+
+    const searchText = this.buildSearchText({
+      article,
+      name,
+      brand,
+      model,
+      groupKey: null,
+      kit,
+      annotation,
+      extra1Value,
+      extra2Value,
+    });
+
+    if (article) {
+      const existing = await this.prisma.product.findFirst({
+        where: { userId, article },
+      });
+
+      if (existing?.isActive) {
+        throw new BadRequestException('Товар с таким артикулом уже существует');
+      }
+
+      if (existing && !existing.isActive) {
+        return this.prisma.product.update({
+          where: { id: existing.id },
+          data: {
+            name,
+            brand,
+            model,
+            kit,
+            annotation,
+            tonePreset: dto.tonePreset ?? null,
+            toneNotes,
+            productRules,
+            extra1Name,
+            extra1Value,
+            extra2Name,
+            extra2Value,
+            searchText,
+            rawRowJson: { source: 'manual_create' },
+            isActive: true,
+          },
+        });
+      }
+    }
+
+    return this.prisma.product.create({
+      data: {
+        userId,
+        article,
+        name,
+        brand,
+        model,
+        groupKey: null,
+        kit,
+        annotation,
+        tonePreset: dto.tonePreset ?? null,
+        toneNotes,
+        productRules,
+        extra1Name,
+        extra1Value,
+        extra2Name,
+        extra2Value,
+        searchText,
+        rawRowJson: { source: 'manual_create' },
       },
     });
   }
@@ -189,14 +277,99 @@ export class ProductsService {
       throw new NotFoundException('Товар не найден');
     }
 
-    if (actor && actor.role === UserRole.user && product.userId !== actor.sub) {
+    if (!actor) {
+      throw new ForbiddenException('Требуется авторизация');
+    }
+
+    if (actor.role === UserRole.user && product.userId !== actor.sub) {
       throw new ForbiddenException('Нет доступа к этому товару');
     }
 
+    const nextArticle = this.hasField(dto, 'article') ? this.getString(dto.article) : product.article;
+    const nextName = this.hasField(dto, 'name') ? this.getString(dto.name) : product.name;
+    const nextBrand = this.hasField(dto, 'brand') ? this.getString(dto.brand) : product.brand;
+    const nextModel = this.hasField(dto, 'model') ? this.getString(dto.model) : product.model;
+    const nextKit = this.hasField(dto, 'kit') ? this.getString(dto.kit) : product.kit;
+    const nextAnnotation = this.hasField(dto, 'annotation') ? this.getString(dto.annotation) : product.annotation;
+    const nextToneNotes = this.hasField(dto, 'toneNotes') ? this.getString(dto.toneNotes) : product.toneNotes;
+    const nextProductRules = this.hasField(dto, 'productRules') ? this.getString(dto.productRules) : product.productRules;
+    const nextExtra1Name = this.hasField(dto, 'extra1Name') ? this.getString(dto.extra1Name) : product.extra1Name;
+    const nextExtra1Value = this.hasField(dto, 'extra1Value') ? this.getString(dto.extra1Value) : product.extra1Value;
+    const nextExtra2Name = this.hasField(dto, 'extra2Name') ? this.getString(dto.extra2Name) : product.extra2Name;
+    const nextExtra2Value = this.hasField(dto, 'extra2Value') ? this.getString(dto.extra2Value) : product.extra2Value;
+
+    if (!nextName) {
+      throw new BadRequestException('Название товара обязательно');
+    }
+
+    if (nextArticle && nextArticle !== product.article) {
+      const duplicate = await this.prisma.product.findFirst({
+        where: {
+          userId: product.userId,
+          article: nextArticle,
+          id: { not: product.id },
+          isActive: true,
+        },
+      });
+
+      if (duplicate) {
+        throw new BadRequestException('Товар с таким артикулом уже существует');
+      }
+    }
+
+    const searchText = this.buildSearchText({
+      article: nextArticle,
+      name: nextName,
+      brand: nextBrand,
+      model: nextModel,
+      groupKey: product.groupKey,
+      kit: nextKit,
+      annotation: nextAnnotation,
+      extra1Value: nextExtra1Value,
+      extra2Value: nextExtra2Value,
+    });
+
     return this.prisma.product.update({
       where: { id: productId },
-      data: dto,
+      data: {
+        article: nextArticle,
+        name: nextName,
+        brand: nextBrand,
+        model: nextModel,
+        kit: nextKit,
+        annotation: nextAnnotation,
+        tonePreset: this.hasField(dto, 'tonePreset') ? (dto.tonePreset ?? null) : product.tonePreset,
+        toneNotes: nextToneNotes,
+        productRules: nextProductRules,
+        extra1Name: nextExtra1Name,
+        extra1Value: nextExtra1Value,
+        extra2Name: nextExtra2Name,
+        extra2Value: nextExtra2Value,
+        searchText,
+      },
     });
+  }
+
+  async remove(productId: string, actor?: JwtUserPayload) {
+    const product = await this.prisma.product.findUnique({ where: { id: productId } });
+    if (!product) {
+      throw new NotFoundException('Товар не найден');
+    }
+
+    if (!actor) {
+      throw new ForbiddenException('Требуется авторизация');
+    }
+
+    if (actor.role === UserRole.user && product.userId !== actor.sub) {
+      throw new ForbiddenException('Нет доступа к этому товару');
+    }
+
+    await this.prisma.product.update({
+      where: { id: productId },
+      data: { isActive: false },
+    });
+
+    return { ok: true, productId };
   }
 
   async matchProduct(userId: string, productName?: string | null, productMeta?: Record<string, unknown> | null) {
@@ -285,5 +458,33 @@ export class ProductsService {
     }
     const normalized = String(value).trim();
     return normalized.length ? normalized : null;
+  }
+
+  private hasField<T extends object>(value: T, key: string) {
+    return Object.prototype.hasOwnProperty.call(value, key);
+  }
+
+  private buildSearchText(input: {
+    article?: string | null;
+    name?: string | null;
+    brand?: string | null;
+    model?: string | null;
+    groupKey?: string | null;
+    kit?: string | null;
+    annotation?: string | null;
+    extra1Value?: string | null;
+    extra2Value?: string | null;
+  }) {
+    return this.ozonImportService.buildSearchText({
+      article: input.article ?? null,
+      name: input.name ?? '',
+      brand: input.brand ?? null,
+      model: input.model ?? null,
+      groupKey: input.groupKey ?? null,
+      kit: input.kit ?? null,
+      annotation: input.annotation ?? null,
+      extra1Value: input.extra1Value ?? null,
+      extra2Value: input.extra2Value ?? null,
+    });
   }
 }

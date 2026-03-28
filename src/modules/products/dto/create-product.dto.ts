@@ -1,14 +1,13 @@
 import { IsEnum, IsOptional, IsString } from 'class-validator';
 import { TonePreset } from '@prisma/client';
 
-export class UpdateProductDto {
+export class CreateProductDto {
   @IsOptional()
   @IsString()
   article?: string;
 
-  @IsOptional()
   @IsString()
-  name?: string;
+  name!: string;
 
   @IsOptional()
   @IsString()

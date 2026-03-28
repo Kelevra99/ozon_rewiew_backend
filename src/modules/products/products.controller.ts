@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -14,6 +15,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ImportCommitDto } from './dto/import-commit.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { CreateProductDto } from './dto/create-product.dto';
 import { ProductsService } from './products.service';
 import { OptionalJwtAuthGuard } from '../auth/optional-jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -52,13 +54,26 @@ export class ProductsController {
     return this.productsService.list(userId);
   }
 
+  @Post()
+  create(@Body() dto: CreateProductDto, @CurrentUser() user: JwtUserPayload | null) {
+    const userId = this.resolveUserId(user);
+    return this.productsService.create(userId, dto);
+  }
+
   @Patch(':productId')
   update(
     @Param('productId') productId: string,
     @Body() dto: UpdateProductDto,
     @CurrentUser() user: JwtUserPayload | null,
   ) {
+    this.resolveUserId(user);
     return this.productsService.update(productId, dto, user ?? undefined);
+  }
+
+  @Delete(':productId')
+  remove(@Param('productId') productId: string, @CurrentUser() user: JwtUserPayload | null) {
+    this.resolveUserId(user);
+    return this.productsService.remove(productId, user ?? undefined);
   }
 
   private resolveUserId(user: JwtUserPayload | null, fallbackUserId?: string) {
