@@ -39,10 +39,12 @@ export class RepliesService {
     const serviceTier = await this.serviceTiersService.getActiveTierByCode(dto.mode);
     const exchangeRate = await this.exchangeRatesService.getActiveRate();
 
+    const normalizedProductMeta = this.normalizeProductMeta(dto);
+
     const matched = await this.productsService.matchProduct(
       user.id,
       dto.productName,
-      dto.productMeta || null,
+      normalizedProductMeta,
     );
 
     const prompt = this.promptBuilderService.build({
@@ -67,7 +69,7 @@ export class RepliesService {
           reviewText: dto.reviewText,
           reviewDate: dto.reviewDate,
           detectedProductName: dto.productName,
-          detectedProductMeta: (dto.productMeta || {}) as object,
+          detectedProductMeta: (normalizedProductMeta || {}) as object,
           promptMode: dto.mode,
           generatedReply: llm.text,
           finalReply: llm.text,
@@ -166,6 +168,51 @@ export class RepliesService {
         errorText: dto.errorText,
       },
     });
+  }
+
+  private normalizeProductMeta(dto: GenerateReplyDto): Record<string, unknown> | null {
+    const productMeta = dto.productMeta && typeof dto.productMeta === 'object'
+      ? (dto.productMeta as Record<string, unknown>)
+      : {};
+    const domContext = dto.domContext && typeof dto.domContext === 'object'
+      ? (dto.domContext as Record<string, unknown>)
+      : {};
+
+    const article =
+      this.pickString(productMeta.article) ??
+      this.pickString(productMeta.sku) ??
+      this.pickString(productMeta.offerId) ??
+      this.pickString(domContext.article);
+
+    const orderNumber =
+      this.pickString(productMeta.orderNumber) ??
+      this.pickString(domContext.orderNumber);
+
+    const productUrl =
+      this.pickString(productMeta.productUrl) ??
+      this.pickString(domContext.productUrl);
+
+    const productRating =
+      this.pickString(productMeta.productRating) ??
+      this.pickString(domContext.productRating);
+
+    const merged: Record<string, unknown> = {
+      ...domContext,
+      ...productMeta,
+    };
+
+    if (article) merged.article = article;
+    if (orderNumber) merged.orderNumber = orderNumber;
+    if (productUrl) merged.productUrl = productUrl;
+    if (productRating) merged.productRating = productRating;
+
+    return Object.keys(merged).length ? merged : null;
+  }
+
+  private pickString(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    const normalized = value.trim();
+    return normalized || undefined;
   }
 
   private estimateCostUsd(serviceTier: { inputPriceUsdPer1m: Prisma.Decimal; outputPriceUsdPer1m: Prisma.Decimal }, promptTokens: number, completionTokens: number): number {
