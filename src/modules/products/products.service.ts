@@ -203,6 +203,10 @@ export class ProductsService {
       throw new BadRequestException('Название товара обязательно');
     }
 
+    if (!article) {
+      throw new BadRequestException('Артикул товара обязателен');
+    }
+
     const searchText = this.buildSearchText({
       article,
       name,
@@ -233,7 +237,7 @@ export class ProductsService {
             model,
             kit,
             annotation,
-            tonePreset: dto.tonePreset ?? null,
+            tonePreset: dto.tonePreset ?? 'friendly',
             toneNotes,
             productRules,
             extra1Name,
@@ -258,7 +262,7 @@ export class ProductsService {
         groupKey: null,
         kit,
         annotation,
-        tonePreset: dto.tonePreset ?? null,
+        tonePreset: dto.tonePreset ?? 'friendly',
         toneNotes,
         productRules,
         extra1Name,
@@ -285,7 +289,13 @@ export class ProductsService {
       throw new ForbiddenException('Нет доступа к этому товару');
     }
 
-    const nextArticle = this.hasField(dto, 'article') ? this.getString(dto.article) : product.article;
+    const nextArticle = this.hasField(dto, 'article')
+      ? this.getString(dto.article)
+      : product.article;
+
+    if (!nextArticle) {
+      throw new BadRequestException('Артикул товара обязателен');
+    }
     const nextName = this.hasField(dto, 'name') ? this.getString(dto.name) : product.name;
     const nextBrand = this.hasField(dto, 'brand') ? this.getString(dto.brand) : product.brand;
     const nextModel = this.hasField(dto, 'model') ? this.getString(dto.model) : product.model;
@@ -338,7 +348,7 @@ export class ProductsService {
         model: nextModel,
         kit: nextKit,
         annotation: nextAnnotation,
-        tonePreset: this.hasField(dto, 'tonePreset') ? (dto.tonePreset ?? null) : product.tonePreset,
+        tonePreset: this.hasField(dto, 'tonePreset') ? (dto.tonePreset ?? product.tonePreset) : product.tonePreset,
         toneNotes: nextToneNotes,
         productRules: nextProductRules,
         extra1Name: nextExtra1Name,
@@ -476,7 +486,7 @@ export class ProductsService {
     extra2Value?: string | null;
   }) {
     return this.ozonImportService.buildSearchText({
-      article: input.article ?? null,
+      article: input.article ?? '',
       name: input.name ?? '',
       brand: input.brand ?? null,
       model: input.model ?? null,
