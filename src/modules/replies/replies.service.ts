@@ -211,8 +211,15 @@ export class RepliesService {
 
   private pickString(value: unknown): string | undefined {
     if (typeof value !== 'string') return undefined;
-    const normalized = value.trim();
-    return normalized || undefined;
+    const normalized = value.trim().replace(/\s+/g, ' ');
+    if (!normalized) return undefined;
+
+    const articleLike = normalized.match(/^[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9_-]*/);
+    if (articleLike && articleLike[0].length >= 4) {
+      return articleLike[0];
+    }
+
+    return normalized;
   }
 
   private estimateCostUsd(serviceTier: { inputPriceUsdPer1m: Prisma.Decimal; outputPriceUsdPer1m: Prisma.Decimal }, promptTokens: number, completionTokens: number): number {
