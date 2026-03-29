@@ -4,7 +4,7 @@ import { IsEmail, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 export class CreatePaymentDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0.01)
+  @Min(10)
   amountRub!: number;
 
   @IsOptional()

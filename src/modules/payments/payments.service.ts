@@ -27,8 +27,8 @@ export class PaymentsService {
 
   async create(userId: string, dto: CreatePaymentDto) {
     const amountMinor = Math.round(dto.amountRub * 100);
-    if (!Number.isFinite(amountMinor) || amountMinor <= 0) {
-      throw new BadRequestException('Сумма пополнения должна быть больше нуля');
+    if (!Number.isFinite(amountMinor) || amountMinor < 1000) {
+      throw new BadRequestException('Минимальная сумма пополнения — 10 ₽');
     }
 
     const user = await this.prisma.user.findUnique({
