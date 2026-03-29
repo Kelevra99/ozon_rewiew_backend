@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -15,6 +15,11 @@ import { UpsertServiceTierDto } from './dto/upsert-service-tier.dto';
 @Roles(UserRole.admin, UserRole.superadmin)
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
+
+  @Get('dashboard/summary')
+  dashboardSummary(@Query('days') days?: string) {
+    return this.adminService.getDashboardSummary(Number(days || 30));
+  }
 
   @Get('users')
   users() {
@@ -84,6 +89,11 @@ export class AdminController {
   @Get('prompt-logs')
   promptLogs() {
     return this.adminService.listPromptLogs();
+  }
+
+  @Get('prompt-logs/:id')
+  promptLog(@Param('id') promptLogId: string) {
+    return this.adminService.getPromptLog(promptLogId);
   }
 
   @Get('audit-logs')

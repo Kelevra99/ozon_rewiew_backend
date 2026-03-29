@@ -7,8 +7,26 @@ import { AdjustWalletDto } from './dto/adjust-wallet.dto';
 import { CreateExchangeRateDto } from './dto/create-exchange-rate.dto';
 import { UpsertServiceTierDto } from './dto/upsert-service-tier.dto';
 
+type AdminDashboardDailyRow = {
+  date: string;
+  topupRub: number | string | null;
+  chargedRub: number | string | null;
+  openAiCostRub: number | string | null;
+  grossProfitRub: number | string | null;
+  repliesCount: number | string;
+  paidPaymentsCount: number | string;
+  promptLogsCount: number | string;
+};
+
 @Injectable()
 export class AdminService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly billingService: BillingService,
+    private readonly exchangeRatesService: ExchangeRatesService,
+    private readonly serviceTiersService: ServiceTiersService,
+  ) {}
+
   private toJson(value: unknown) {
     if (value === null || value === undefined) {
       return null;
@@ -17,12 +35,129 @@ export class AdminService {
     return JSON.parse(JSON.stringify(value));
   }
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly billingService: BillingService,
-    private readonly exchangeRatesService: ExchangeRatesService,
-    private readonly serviceTiersService: ServiceTiersService,
-  ) {}
+  private toNumber(value: unknown) {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : 0;
+    }
+
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    return 0;
+  }
+
+  async getDashboardSummary(days = 30) {
+    const safeDays = Math.min(Math.max(Number(days) || 30, 7), 365);
+    const timezone = 'Europe/Amsterdam';
+
+    const [users, reviews, payments, promptLogs, rows] = await Promise.all([
+      this.prisma.user.count(),
+      this.prisma.reviewLog.count(),
+      this.prisma.payment.count(),
+      this.prisma.promptLog.count(),
+      this.prisma.$queryRaw<AdminDashboardDailyRow[]>`
+        WITH bounds AS (
+          SELECT
+            ((NOW() AT TIME ZONE ${timezone})::date - (${safeDays} - 1) * INTERVAL '1 day')::date AS start_day,
+            (NOW() AT TIME ZONE ${timezone})::date AS end_day
+        ),
+        days AS (
+          SELECT generate_series(
+            (SELECT start_day FROM bounds),
+            (SELECT end_day FROM bounds),
+            INTERVAL '1 day'
+          )::date AS day
+        ),
+        topups AS (
+          SELECT
+            (p."paidAt" AT TIME ZONE ${timezone})::date AS day,
+            COUNT(*)::int AS "paidPaymentsCount",
+            COALESCE(ROUND(SUM((p."amountMinor"::numeric / 100))::numeric, 6), 0)::text AS "topupRub"
+          FROM "Payment" p
+          WHERE p.status = 'paid'
+            AND p."paidAt" IS NOT NULL
+          GROUP BY 1
+        ),
+        review_costs AS (
+          SELECT
+            (rc."createdAt" AT TIME ZONE ${timezone})::date AS day,
+            COUNT(*)::int AS "repliesCount",
+            COALESCE(ROUND(SUM(rc."chargedRub")::numeric, 6), 0)::text AS "chargedRub",
+            COALESCE(ROUND(SUM(rc."openAiCostRub")::numeric, 6), 0)::text AS "openAiCostRub"
+          FROM "ReviewCost" rc
+          GROUP BY 1
+        ),
+        prompt_logs AS (
+          SELECT
+            (pl."createdAt" AT TIME ZONE ${timezone})::date AS day,
+            COUNT(*)::int AS "promptLogsCount"
+          FROM "PromptLog" pl
+          GROUP BY 1
+        )
+        SELECT
+          days.day::text AS "date",
+          COALESCE(t."topupRub", '0') AS "topupRub",
+          COALESCE(rc."chargedRub", '0') AS "chargedRub",
+          COALESCE(rc."openAiCostRub", '0') AS "openAiCostRub",
+          COALESCE(
+            ROUND(
+              (
+                COALESCE((rc."chargedRub")::numeric, 0)
+                - COALESCE((rc."openAiCostRub")::numeric, 0)
+              )::numeric,
+              6
+            ),
+            0
+          )::text AS "grossProfitRub",
+          COALESCE(rc."repliesCount", 0)::int AS "repliesCount",
+          COALESCE(t."paidPaymentsCount", 0)::int AS "paidPaymentsCount",
+          COALESCE(pl."promptLogsCount", 0)::int AS "promptLogsCount"
+        FROM days
+        LEFT JOIN topups t ON t.day = days.day
+        LEFT JOIN review_costs rc ON rc.day = days.day
+        LEFT JOIN prompt_logs pl ON pl.day = days.day
+        ORDER BY days.day ASC
+      `,
+    ]);
+
+    const items = rows.map((row) => ({
+      date: row.date,
+      topupRub: this.toNumber(row.topupRub),
+      chargedRub: this.toNumber(row.chargedRub),
+      openAiCostRub: this.toNumber(row.openAiCostRub),
+      grossProfitRub: this.toNumber(row.grossProfitRub),
+      repliesCount: this.toNumber(row.repliesCount),
+      paidPaymentsCount: this.toNumber(row.paidPaymentsCount),
+      promptLogsCount: this.toNumber(row.promptLogsCount),
+    }));
+
+    const today =
+      items[items.length - 1] ??
+      {
+        date: new Date().toISOString().slice(0, 10),
+        topupRub: 0,
+        chargedRub: 0,
+        openAiCostRub: 0,
+        grossProfitRub: 0,
+        repliesCount: 0,
+        paidPaymentsCount: 0,
+        promptLogsCount: 0,
+      };
+
+    return {
+      days: safeDays,
+      counts: {
+        users,
+        reviews,
+        payments,
+        promptLogs,
+      },
+      today,
+      items,
+    };
+  }
 
   async listUsers() {
     const [users, topups, spends] = await Promise.all([
@@ -273,5 +408,33 @@ export class AdminService {
         },
       },
     });
+  }
+
+  async getPromptLog(promptLogId: string) {
+    const promptLog = await this.prisma.promptLog.findUnique({
+      where: { id: promptLogId },
+      include: {
+        user: {
+          select: { id: true, email: true, name: true },
+        },
+        reviewLog: {
+          include: {
+            user: {
+              select: { id: true, email: true, name: true },
+            },
+            product: {
+              select: { id: true, article: true, name: true },
+            },
+            reviewCost: true,
+          },
+        },
+      },
+    });
+
+    if (!promptLog) {
+      throw new NotFoundException('Prompt log не найден');
+    }
+
+    return promptLog;
   }
 }
