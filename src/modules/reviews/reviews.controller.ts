@@ -21,6 +21,15 @@ export class ReviewsController {
     return this.reviewsService.history(user.sub, pageNumber, limitNumber);
   }
 
+  @Get('stats/daily')
+  dailyStats(
+    @CurrentUser() user: JwtUserPayload,
+    @Query('days') days?: string,
+  ) {
+    const daysNumber = Math.min(Math.max(Number(days) || 30, 7), 365);
+    return this.reviewsService.dailyStats(user.sub, daysNumber);
+  }
+
   @Get(':id')
   detail(@CurrentUser() user: JwtUserPayload, @Param('id') reviewId: string) {
     return this.reviewsService.detail(user.sub, reviewId);
