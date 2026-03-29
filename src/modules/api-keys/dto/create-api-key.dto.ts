@@ -1,10 +1,8 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CreateApiKeyDto {
-  @IsString()
-  userId!: string;
-
   @IsOptional()
   @IsString()
+  @MaxLength(120)
   name?: string;
 }

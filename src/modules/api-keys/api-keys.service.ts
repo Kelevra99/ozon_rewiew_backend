@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -14,20 +14,41 @@ export class ApiKeysService {
     return createHash('sha256').update(key).digest('hex');
   }
 
-  async create(userId: string) {
+  private serializeApiKey(apiKey: {
+    id: string;
+    keyPrefix: string;
+    name: string | null;
+    createdAt: Date;
+    revokedAt: Date | null;
+    lastUsedAt: Date | null;
+  }) {
+    return {
+      id: apiKey.id,
+      prefix: apiKey.keyPrefix,
+      name: apiKey.name,
+      createdAt: apiKey.createdAt,
+      lastUsedAt: apiKey.lastUsedAt,
+      isActive: apiKey.revokedAt === null,
+    };
+  }
+
+  async create(userId: string, name?: string) {
     const plainKey = this.generatePlainKey();
     const keyHash = this.hashKey(plainKey);
     const keyPrefix = plainKey.slice(0, 12);
+    const normalizedName = name?.trim() ? name.trim() : null;
 
     const apiKey = await this.prisma.apiKey.create({
       data: {
         userId,
         keyHash,
         keyPrefix,
+        name: normalizedName,
       },
       select: {
         id: true,
         keyPrefix: true,
+        name: true,
         createdAt: true,
         revokedAt: true,
         lastUsedAt: true,
@@ -35,17 +56,18 @@ export class ApiKeysService {
     });
 
     return {
-      apiKey,
+      apiKey: this.serializeApiKey(apiKey),
       plainKey,
     };
   }
 
   async list(userId: string) {
-    return this.prisma.apiKey.findMany({
+    const items = await this.prisma.apiKey.findMany({
       where: { userId },
       select: {
         id: true,
         keyPrefix: true,
+        name: true,
         createdAt: true,
         revokedAt: true,
         lastUsedAt: true,
@@ -54,6 +76,77 @@ export class ApiKeysService {
         createdAt: 'desc',
       },
     });
+
+    return items.map((item) => this.serializeApiKey(item));
+  }
+
+  async deactivate(userId: string, id: string) {
+    const existing = await this.prisma.apiKey.findFirst({
+      where: { id, userId },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Ключ не найден');
+    }
+
+    const apiKey = await this.prisma.apiKey.update({
+      where: { id },
+      data: { revokedAt: new Date() },
+      select: {
+        id: true,
+        keyPrefix: true,
+        name: true,
+        createdAt: true,
+        revokedAt: true,
+        lastUsedAt: true,
+      },
+    });
+
+    return this.serializeApiKey(apiKey);
+  }
+
+  async activate(userId: string, id: string) {
+    const existing = await this.prisma.apiKey.findFirst({
+      where: { id, userId },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Ключ не найден');
+    }
+
+    const apiKey = await this.prisma.apiKey.update({
+      where: { id },
+      data: { revokedAt: null },
+      select: {
+        id: true,
+        keyPrefix: true,
+        name: true,
+        createdAt: true,
+        revokedAt: true,
+        lastUsedAt: true,
+      },
+    });
+
+    return this.serializeApiKey(apiKey);
+  }
+
+  async remove(userId: string, id: string) {
+    const existing = await this.prisma.apiKey.findFirst({
+      where: { id, userId },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Ключ не найден');
+    }
+
+    await this.prisma.apiKey.delete({
+      where: { id },
+    });
+
+    return { success: true };
   }
 
   async findActiveByPlainKey(plainKey: string) {
