@@ -15,6 +15,7 @@ export class PromptBuilderService {
     const toneNotes = (args.product?.toneNotes || '').trim();
     const annotation = (args.product?.annotation || '').trim();
     const productRules = (args.product?.productRules || '').trim();
+    const tonePreset = (args.product?.tonePreset || '').trim();
 
     const productLines = args.product
       ? [
@@ -23,6 +24,7 @@ export class PromptBuilderService {
           args.product.brand ? `Бренд: ${args.product.brand}` : null,
           args.product.model ? `Модель: ${args.product.model}` : null,
           args.product.kit ? `Комплектация: ${args.product.kit}` : null,
+          tonePreset ? `Пресет тона: ${tonePreset}` : null,
           args.product.extra1Name && args.product.extra1Value
             ? `${args.product.extra1Name}: ${args.product.extra1Value}`
             : null,
@@ -32,24 +34,18 @@ export class PromptBuilderService {
         ].filter(Boolean)
       : [`Название товара: ${args.productName || 'не передано'}`];
 
-    const fallbackContextLines = [
-      annotation ? `Аннотация:\n${annotation}` : null,
-      productRules ? `Специальные правила по товару:\n${productRules}` : null,
-    ].filter(Boolean);
-
-    const systemPrompt = toneNotes || '';
-
     const assembledPrompt = [
       `Товар:\n${productLines.join('\n')}`,
-      !toneNotes && fallbackContextLines.length
-        ? `Контекст товара:\n${fallbackContextLines.join('\n\n')}`
-        : null,
+      productRules ? `Специальные правила по товару:\n${productRules}` : null,
+      annotation ? `Аннотация:\n${annotation}` : null,
       `Оценка:\n${args.rating} из 5`,
       `Текст отзыва:\n${reviewText || 'Покупатель не оставил текст, только оценку'}`,
     ]
       .filter(Boolean)
       .join('\n\n')
       .trim();
+
+    const systemPrompt = toneNotes || '';
 
     return {
       systemPrompt,
@@ -58,9 +54,10 @@ export class PromptBuilderService {
       productContextJson: {
         article: args.product?.article || null,
         productName: args.product?.name || args.productName || null,
+        tonePreset: tonePreset || null,
         toneNotes: toneNotes || null,
-        productRules: toneNotes ? null : productRules || null,
-        annotation: toneNotes ? null : annotation || null,
+        productRules: productRules || null,
+        annotation: annotation || null,
         replyContextShort: null,
         extra1Name: args.product?.extra1Name || null,
         extra1Value: args.product?.extra1Value || null,
