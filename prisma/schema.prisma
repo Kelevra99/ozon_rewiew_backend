@@ -169,6 +169,7 @@ model Product {
   tonePreset     TonePreset @default(friendly)
   toneNotes      String?
   productRules   String?
+  replyContextShort String?
   extra1Name     String?
   extra1Value    String?
   extra2Name     String?

@@ -16,6 +16,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ImportCommitDto } from './dto/import-commit.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { CreateProductDto } from './dto/create-product.dto';
+import { GenerateReplyContextDto } from './dto/generate-reply-context.dto';
 import { ProductsService } from './products.service';
 import { OptionalJwtAuthGuard } from '../auth/optional-jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -48,6 +49,11 @@ export class ProductsController {
     return this.productsService.commitImport(userId, dto);
   }
 
+  @Get('context-modes')
+  contextModes() {
+    return this.productsService.listContextModes();
+  }
+
   @Get()
   list(@Query('userId') queryUserId: string | undefined, @CurrentUser() user: JwtUserPayload | null) {
     const userId = this.resolveUserId(user, queryUserId);
@@ -58,6 +64,16 @@ export class ProductsController {
   create(@Body() dto: CreateProductDto, @CurrentUser() user: JwtUserPayload | null) {
     const userId = this.resolveUserId(user);
     return this.productsService.create(userId, dto);
+  }
+
+  @Post(':productId/reply-context/generate')
+  generateReplyContext(
+    @Param('productId') productId: string,
+    @Body() dto: GenerateReplyContextDto,
+    @CurrentUser() user: JwtUserPayload | null,
+  ) {
+    this.resolveUserId(user);
+    return this.productsService.generateReplyContext(productId, dto, user ?? undefined);
   }
 
   @Patch(':productId')

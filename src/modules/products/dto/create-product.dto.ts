@@ -39,6 +39,10 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsString()
+  replyContextShort?: string;
+
+  @IsOptional()
+  @IsString()
   extra1Name?: string;
 
   @IsOptional()
