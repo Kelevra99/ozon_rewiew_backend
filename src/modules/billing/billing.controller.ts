@@ -17,6 +17,9 @@ export class BillingController {
 
   @Get('ledger')
   ledger(@CurrentUser() user: JwtUserPayload, @Query() query: LedgerQueryDto) {
-    return this.billingService.listLedger(user.sub, query.take);
+    const page = Math.max(Number(query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(query.limit ?? query.take) || 50, 1), 200);
+
+    return this.billingService.listLedger(user.sub, page, limit);
   }
 }

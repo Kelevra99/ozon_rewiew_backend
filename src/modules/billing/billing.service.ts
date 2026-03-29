@@ -45,12 +45,35 @@ export class BillingService {
     };
   }
 
-  async listLedger(userId: string, take = 50) {
-    return this.prisma.walletLedgerEntry.findMany({
+  async listLedger(userId: string, page = 1, limit = 50) {
+    const safeLimit = Math.min(Math.max(limit, 1), 200);
+
+    const total = await this.prisma.walletLedgerEntry.count({
+      where: { userId },
+    });
+
+    const totalPages = Math.max(Math.ceil(total / safeLimit), 1);
+    const safePage = Math.min(Math.max(page, 1), totalPages);
+    const skip = (safePage - 1) * safeLimit;
+
+    const items = await this.prisma.walletLedgerEntry.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
-      take,
+      skip,
+      take: safeLimit,
     });
+
+    return {
+      items,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages,
+        hasPrev: safePage > 1,
+        hasNext: safePage < totalPages,
+      },
+    };
   }
 
   async ensurePositiveBalance(userId: string) {
