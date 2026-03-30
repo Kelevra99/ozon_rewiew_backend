@@ -188,7 +188,7 @@ export class ProductsService {
   async list(userId: string) {
     return this.prisma.product.findMany({
       where: { userId, isActive: true },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: {
         id: true,
         article: true,
