@@ -54,6 +54,15 @@ export class ProductsController {
     return this.productsService.listContextModes();
   }
 
+  @Get('annotation-shortenings/:logId')
+  annotationShorteningDetail(
+    @Param('logId') logId: string,
+    @CurrentUser() user: JwtUserPayload | null,
+  ) {
+    const userId = this.resolveUserId(user);
+    return this.productsService.annotationShorteningDetail(userId, logId);
+  }
+
   @Get()
   list(@Query('userId') queryUserId: string | undefined, @CurrentUser() user: JwtUserPayload | null) {
     const userId = this.resolveUserId(user, queryUserId);
@@ -74,6 +83,15 @@ export class ProductsController {
   ) {
     this.resolveUserId(user);
     return this.productsService.generateReplyContext(productId, dto, user ?? undefined);
+  }
+
+  @Post(':productId/annotation-shorten')
+  shortenAnnotation(
+    @Param('productId') productId: string,
+    @CurrentUser() user: JwtUserPayload | null,
+  ) {
+    this.resolveUserId(user);
+    return this.productsService.shortenAnnotation(productId, user ?? undefined);
   }
 
   @Patch(':productId')

@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { Product, ProductImportDraft, UserRole } from '@prisma/client';
+import { Product, ProductImportDraft, UserRole, WalletLedgerEntryType, WalletLedgerReferenceType } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { JwtUserPayload } from '../../common/authenticated-user.interface';
@@ -10,6 +10,7 @@ import { GenerateReplyContextDto } from './dto/generate-reply-context.dto';
 import { OzonImportService } from './ozon-import.service';
 import { ServiceTiersService } from '../service-tiers/service-tiers.service';
 import { LlmService } from '../replies/llm.service';
+import { BillingService } from '../billing/billing.service';
 
 @Injectable()
 export class ProductsService {
@@ -18,6 +19,7 @@ export class ProductsService {
     private readonly ozonImportService: OzonImportService,
     private readonly serviceTiersService: ServiceTiersService,
     private readonly llmService: LlmService,
+    private readonly billingService: BillingService,
   ) {}
 
   async previewImport(userId: string, filename: string, buffer: Buffer) {
@@ -352,6 +354,170 @@ export class ProductsService {
     };
   }
 
+
+  async annotationShorteningDetail(userId: string, logId: string) {
+    const log = await this.prisma.productAnnotationShorteningLog.findFirst({
+      where: { id: logId, userId },
+      include: {
+        product: {
+          select: {
+            id: true,
+            article: true,
+            name: true,
+            brand: true,
+            model: true,
+          },
+        },
+        serviceTier: true,
+        exchangeRate: true,
+      },
+    });
+
+    if (!log) {
+      throw new NotFoundException('Сокращение описания не найдено');
+    }
+
+    return log;
+  }
+
+  async shortenAnnotation(productId: string, actor?: JwtUserPayload) {
+    const product = await this.prisma.product.findUnique({ where: { id: productId } });
+    if (!product) {
+      throw new NotFoundException('Товар не найден');
+    }
+
+    if (!actor) {
+      throw new ForbiddenException('Требуется авторизация');
+    }
+
+    if (actor.role === UserRole.user && product.userId !== actor.sub) {
+      throw new ForbiddenException('Нет доступа к этому товару');
+    }
+
+    await this.billingService.ensurePositiveBalance(product.userId);
+
+    const originalAnnotation = product.annotation ?? '';
+    if (!originalAnnotation.trim()) {
+      throw new BadRequestException('Описание товара пустое, сокращать нечего');
+    }
+
+    const sourceAnnotation = this.normalizeAnnotationSource(originalAnnotation);
+    if (!sourceAnnotation) {
+      throw new BadRequestException('В описании товара не осталось полезного текста после очистки');
+    }
+
+    const serviceTierCode = process.env.ANNOTATION_SHORTENING_SERVICE_TIER_CODE || 'standard';
+    const serviceTier = await this.serviceTiersService.getActiveTierByCode(serviceTierCode);
+
+    const exchangeRate = await this.prisma.exchangeRate.findFirst({
+      where: { isActive: true },
+      orderBy: { effectiveDate: 'desc' },
+      select: {
+        id: true,
+        rate: true,
+      },
+    });
+
+    if (!exchangeRate) {
+      throw new NotFoundException('Активный курс USD/RUB не найден');
+    }
+
+    const { systemPrompt, assembledPrompt } = this.buildAnnotationShorteningPrompt(product, sourceAnnotation);
+    const llm = await this.llmService.generateReply(`${systemPrompt}\n\n${assembledPrompt}`, serviceTier.openAiModel);
+    const shortenedAnnotation = this.getString(llm.text);
+
+    if (!shortenedAnnotation) {
+      throw new BadRequestException('Не удалось получить сокращённое описание');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const wallet = await tx.wallet.findUnique({ where: { userId: product.userId } });
+      if (!wallet) {
+        throw new NotFoundException('Кошелёк пользователя не найден');
+      }
+
+      const calculation = this.billingService.calculateReviewCharge({
+        serviceTier,
+        exchangeRate,
+        inputTokens: llm.promptTokens,
+        outputTokens: llm.completionTokens,
+      });
+
+      if (wallet.balanceMinor < calculation.chargedMinor) {
+        throw new ForbiddenException('Недостаточно средств на балансе для списания стоимости сокращения описания');
+      }
+
+      const log = await tx.productAnnotationShorteningLog.create({
+        data: {
+          userId: product.userId,
+          productId: product.id,
+          originalAnnotation,
+          sourceAnnotation,
+          shortenedAnnotation,
+          serviceTierId: serviceTier.id,
+          exchangeRateId: exchangeRate.id,
+          model: llm.model,
+          promptTokens: llm.promptTokens,
+          completionTokens: llm.completionTokens,
+          totalTokens: llm.totalTokens,
+          latencyMs: llm.latencyMs,
+          openAiCostUsd: calculation.openAiCostUsd,
+          usdRubRate: calculation.usdRubRate,
+          openAiCostRub: calculation.openAiCostRub,
+          markupMultiplier: calculation.markupMultiplier,
+          chargedRub: calculation.chargedRub,
+          chargedMinor: calculation.chargedMinor,
+          systemPrompt,
+          assembledPrompt,
+        },
+      });
+
+      const updatedProduct = await tx.product.update({
+        where: { id: product.id },
+        data: {
+          annotation: shortenedAnnotation,
+        },
+      });
+
+      const updatedWallet = await tx.wallet.update({
+        where: { id: wallet.id },
+        data: {
+          balanceMinor: {
+            decrement: calculation.chargedMinor,
+          },
+        },
+      });
+
+      await tx.walletLedgerEntry.create({
+        data: {
+          userId: product.userId,
+          walletId: wallet.id,
+          type: WalletLedgerEntryType.debit_annotation_shortening,
+          amountMinor: -calculation.chargedMinor,
+          currency: wallet.currency,
+          referenceType: WalletLedgerReferenceType.annotation_shortening_log,
+          referenceId: log.id,
+          description: `Списание за сокращение описания товара ${product.article}`,
+          metaJson: {
+            productId: product.id,
+            article: product.article,
+            model: llm.model,
+            serviceTierCode: serviceTier.code,
+          },
+        },
+      });
+
+      return {
+        logId: log.id,
+        shortenedAnnotation: updatedProduct.annotation,
+        chargedMinor: calculation.chargedMinor,
+        chargedRub: Number(calculation.chargedRub.toFixed(8)),
+        balanceAfterMinor: updatedWallet.balanceMinor,
+        balanceAfterRub: updatedWallet.balanceMinor / 100,
+      };
+    });
+  }
+
   async update(productId: string, dto: UpdateProductDto, actor?: JwtUserPayload) {
     const product = await this.prisma.product.findUnique({ where: { id: productId } });
     if (!product) {
@@ -550,6 +716,52 @@ export class ProductsService {
 Данные товара:
 ${parts.join('\n')}
     `.trim();
+  }
+
+
+  private buildAnnotationShorteningPrompt(product: Product, sourceAnnotation: string) {
+    const contextParts = [
+      `Название товара: ${product.name}`,
+      `Артикул: ${product.article}`,
+      product.brand ? `Бренд: ${product.brand}` : null,
+      product.model ? `Модель: ${product.model}` : null,
+      product.kit ? `Комплектация: ${product.kit}` : null,
+      product.extra1Name && product.extra1Value ? `${product.extra1Name}: ${product.extra1Value}` : null,
+      product.extra2Name && product.extra2Value ? `${product.extra2Name}: ${product.extra2Value}` : null,
+      '',
+      'Исходное описание:',
+      sourceAnnotation,
+    ].filter(Boolean);
+
+    const systemPrompt = [
+      'Ты сокращаешь описание товара для внутреннего AI-контекста, который потом используется при ответах на отзывы покупателей на маркетплейсе.',
+      'Нужно оставить только факты, которые реально помогают понять, что это за товар, какие у него ключевые свойства, ограничения, совместимость, важные особенности использования и типовые спорные моменты.',
+      'Удаляй рекламную воду, лозунги, SEO-мусор, хештеги, повторы, эмодзи, HTML-артефакты, общие преимущества без пользы, призывы к покупке и всё лишнее.',
+      'Не выдумывай факты. Используй только то, что есть в исходных данных.',
+      'Результат должен быть коротким и плотным по смыслу.',
+      'Формат результата: простой русский текст, без markdown, без списков, без вступлений, без кавычек вокруг ответа.',
+      'Желательная длина: примерно 180–700 символов.',
+    ].join('\n');
+
+    const assembledPrompt = contextParts.join('\n');
+
+    return { systemPrompt, assembledPrompt };
+  }
+
+  private normalizeAnnotationSource(value?: string | null) {
+    const cleaned = this.cleanHtmlText(value);
+    if (!cleaned) {
+      return '';
+    }
+
+    return cleaned
+      .replace(/https?:\/\/\S+/gi, ' ')
+      .replace(/#[^\s#]+/g, ' ')
+      .replace(/[•▪◦◆■✅✔️★☆]/g, ' ')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+      .slice(0, 12000);
   }
 
   private cleanHtmlText(value?: string | null) {

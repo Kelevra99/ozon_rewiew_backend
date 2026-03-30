@@ -79,7 +79,7 @@ export class BillingService {
   async ensurePositiveBalance(userId: string) {
     const wallet = await this.getOrCreateWallet(userId);
     if (wallet.balanceMinor <= 0) {
-      throw new ForbiddenException('Недостаточно средств на балансе для генерации ответа');
+      throw new ForbiddenException('Недостаточно средств на балансе для генерации');
     }
 
     return wallet;
