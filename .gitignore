@@ -13,3 +13,7 @@ Backend.zip
 
 .idea/
 .vscode/
+
+# local backups
+_backup_manual_wallet_*/
+src/modules/admin/_backup_*/
