@@ -263,10 +263,14 @@ export class BillingService {
     metaJson?: object;
   }) {
     return this.prisma.$transaction(async (tx) => {
-      const wallet = await tx.wallet.findUnique({ where: { userId: args.userId } });
-      if (!wallet) {
-        throw new NotFoundException('Кошелёк пользователя не найден');
-      }
+      const wallet = await tx.wallet.upsert({
+        where: { userId: args.userId },
+        update: {},
+        create: {
+          userId: args.userId,
+          currency: WalletCurrency.RUB,
+        },
+      });
 
       const updatedWallet = await tx.wallet.update({
         where: { id: wallet.id },
@@ -277,13 +281,11 @@ export class BillingService {
         },
       });
 
-      const entryType = args.amountMinor >= 0 ? WalletLedgerEntryType.manual_adjustment : WalletLedgerEntryType.manual_adjustment;
-
       const ledgerEntry = await tx.walletLedgerEntry.create({
         data: {
           userId: args.userId,
           walletId: wallet.id,
-          type: entryType,
+          type: WalletLedgerEntryType.manual_adjustment,
           amountMinor: args.amountMinor,
           currency: wallet.currency,
           referenceType: WalletLedgerReferenceType.admin_adjustment,
