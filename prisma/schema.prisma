@@ -79,10 +79,15 @@ model User {
   email         String         @unique
   passwordHash  String
   name          String
-  role          UserRole       @default(user)
-  isActive      Boolean        @default(true)
-  lastLoginAt   DateTime?
-  defaultTone   TonePreset     @default(friendly)
+  role                      UserRole       @default(user)
+  isActive                  Boolean        @default(true)
+  emailVerified             Boolean        @default(true)
+  emailVerificationCodeHash String?
+  emailVerificationExpiresAt DateTime?
+  emailVerificationSentAt   DateTime?
+  emailVerificationAttempts Int            @default(0)
+  lastLoginAt               DateTime?
+  defaultTone               TonePreset     @default(friendly)
   toneNotes     String?
   brandRules    String?
   createdAt     DateTime       @default(now())
