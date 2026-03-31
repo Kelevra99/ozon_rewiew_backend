@@ -110,8 +110,6 @@ export class ProductsService {
           groupKey: base.groupKey,
           kit: base.kit,
           annotation: base.annotation,
-          tonePreset: dto.defaultTonePreset,
-          toneNotes: dto.defaultToneNotes,
           productRules: dto.defaultProductRules,
           replyContextShort: null,
           extra1Name,
@@ -132,8 +130,6 @@ export class ProductsService {
           groupKey: base.groupKey,
           kit: base.kit,
           annotation: base.annotation,
-          tonePreset: dto.defaultTonePreset,
-          toneNotes: dto.defaultToneNotes,
           productRules: dto.defaultProductRules,
           replyContextShort: null,
           extra1Name,
@@ -199,8 +195,6 @@ export class ProductsService {
         model: true,
         kit: true,
         annotation: true,
-        tonePreset: true,
-        toneNotes: true,
         productRules: true,
         replyContextShort: true,
         extra1Name: true,
@@ -220,7 +214,6 @@ export class ProductsService {
     const model = this.getString(dto.model);
     const kit = this.getString(dto.kit);
     const annotation = this.getString(dto.annotation);
-    const toneNotes = this.getString(dto.toneNotes);
     const productRules = this.getString(dto.productRules);
     const replyContextShort = this.getString(dto.replyContextShort);
     const extra1Name = this.getString(dto.extra1Name);
@@ -265,8 +258,6 @@ export class ProductsService {
           model,
           kit,
           annotation,
-          tonePreset: dto.tonePreset ?? 'friendly',
-          toneNotes,
           productRules,
           replyContextShort,
           extra1Name,
@@ -290,8 +281,6 @@ export class ProductsService {
         groupKey: null,
         kit,
         annotation,
-        tonePreset: dto.tonePreset ?? 'friendly',
-        toneNotes,
         productRules,
         replyContextShort,
         extra1Name,
@@ -545,7 +534,6 @@ export class ProductsService {
     const nextModel = this.hasField(dto, 'model') ? this.getString(dto.model) : product.model;
     const nextKit = this.hasField(dto, 'kit') ? this.getString(dto.kit) : product.kit;
     const nextAnnotation = this.hasField(dto, 'annotation') ? this.getString(dto.annotation) : product.annotation;
-    const nextToneNotes = this.hasField(dto, 'toneNotes') ? this.getString(dto.toneNotes) : product.toneNotes;
     const nextProductRules = this.hasField(dto, 'productRules') ? this.getString(dto.productRules) : product.productRules;
     const nextReplyContextShort = this.hasField(dto, 'replyContextShort')
       ? this.getString(dto.replyContextShort)
@@ -595,8 +583,6 @@ export class ProductsService {
         model: nextModel,
         kit: nextKit,
         annotation: nextAnnotation,
-        tonePreset: this.hasField(dto, 'tonePreset') ? (dto.tonePreset ?? product.tonePreset) : product.tonePreset,
-        toneNotes: nextToneNotes,
         productRules: nextProductRules,
         replyContextShort: nextReplyContextShort,
         extra1Name: nextExtra1Name,
@@ -667,7 +653,6 @@ export class ProductsService {
 
   private buildCompactContextPrompt(product: Product) {
     const annotation = this.cleanHtmlText(product.annotation);
-    const toneNotes = this.cleanHtmlText(product.toneNotes);
     const productRules = this.cleanHtmlText(product.productRules);
 
     const parts = [
@@ -677,7 +662,6 @@ export class ProductsService {
       product.model ? `Модель: ${product.model}` : null,
       product.kit ? `Комплектация: ${product.kit}` : null,
       annotation ? `Аннотация: ${annotation}` : null,
-      toneNotes ? `Tone notes: ${toneNotes}` : null,
       productRules ? `Product rules: ${productRules}` : null,
       product.extra1Name && product.extra1Value ? `${product.extra1Name}: ${product.extra1Value}` : null,
       product.extra2Name && product.extra2Value ? `${product.extra2Name}: ${product.extra2Value}` : null,
