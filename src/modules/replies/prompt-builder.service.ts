@@ -20,10 +20,21 @@ export class PromptBuilderService {
     mode: 'standard' | 'advanced' | 'expert';
   }) {
     const reviewText = (args.reviewText || '').trim();
-    const toneNotes = (args.product?.toneNotes || '').trim();
+
+    // Переходный режим:
+    // 1) сначала общий пользовательский тон
+    // 2) если его ещё не задали — старый тон из товара
+    // 3) если ничего нет — базовый system prompt
+    const userToneNotes = (args.user.toneNotes || '').trim();
+    const productToneNotes = (args.product?.toneNotes || '').trim();
+    const toneNotes = userToneNotes || productToneNotes;
+
+    const userTonePreset = String(args.user.defaultTone || '').trim();
+    const productTonePreset = String(args.product?.tonePreset || '').trim();
+    const tonePreset = userTonePreset || productTonePreset;
+
     const annotation = (args.product?.annotation || '').trim();
     const productRules = (args.product?.productRules || '').trim();
-    const tonePreset = (args.product?.tonePreset || '').trim();
 
     const productLines = args.product
       ? [
@@ -32,7 +43,6 @@ export class PromptBuilderService {
           args.product.brand ? `Бренд: ${args.product.brand}` : null,
           args.product.model ? `Модель: ${args.product.model}` : null,
           args.product.kit ? `Комплектация: ${args.product.kit}` : null,
-          tonePreset ? `Пресет тона: ${tonePreset}` : null,
           args.product.extra1Name && args.product.extra1Value
             ? `${args.product.extra1Name}: ${args.product.extra1Value}`
             : null,
@@ -43,6 +53,7 @@ export class PromptBuilderService {
       : [`Название товара: ${args.productName || 'не передано'}`];
 
     const assembledPrompt = [
+      tonePreset ? `Общий пресет тона:\n${tonePreset}` : null,
       `Товар:\n${productLines.join('\n')}`,
       productRules ? `Специальные правила по товару:\n${productRules}` : null,
       annotation ? `Аннотация:\n${annotation}` : null,
