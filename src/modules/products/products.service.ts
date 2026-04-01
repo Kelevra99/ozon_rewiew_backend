@@ -5,6 +5,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import type { JwtUserPayload } from '../../common/authenticated-user.interface';
 import { ImportCommitDto } from './dto/import-commit.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { BulkUpdateProductsDto } from './dto/bulk-update-products.dto';
+import { BulkDeleteProductsDto } from './dto/bulk-delete-products.dto';
 import { CreateProductDto } from './dto/create-product.dto';
 import { GenerateReplyContextDto } from './dto/generate-reply-context.dto';
 import { OzonImportService } from './ozon-import.service';
@@ -594,6 +596,77 @@ export class ProductsService {
     });
   }
 
+  async bulkUpdate(dto: BulkUpdateProductsDto, actor?: JwtUserPayload) {
+    const hasUpdatableField = ['brand', 'model', 'productRules', 'annotation'].some((field) =>
+      this.hasField(dto, field),
+    );
+
+    if (!hasUpdatableField) {
+      throw new BadRequestException('Не передано ни одного поля для массового обновления');
+    }
+
+    const { products } = await this.getAccessibleProductsOrFail(dto.productIds, actor);
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const product of products) {
+        const nextBrand = this.hasField(dto, 'brand') ? this.getString(dto.brand) : product.brand;
+        const nextModel = this.hasField(dto, 'model') ? this.getString(dto.model) : product.model;
+        const nextAnnotation = this.hasField(dto, 'annotation')
+          ? this.getString(dto.annotation)
+          : product.annotation;
+        const nextProductRules = this.hasField(dto, 'productRules')
+          ? this.getString(dto.productRules)
+          : product.productRules;
+
+        const searchText = this.buildSearchText({
+          article: product.article,
+          name: product.name,
+          brand: nextBrand,
+          model: nextModel,
+          groupKey: product.groupKey,
+          kit: product.kit,
+          annotation: nextAnnotation,
+          extra1Value: product.extra1Value,
+          extra2Value: product.extra2Value,
+        });
+
+        await tx.product.update({
+          where: { id: product.id },
+          data: {
+            brand: nextBrand,
+            model: nextModel,
+            annotation: nextAnnotation,
+            productRules: nextProductRules,
+            searchText,
+          },
+        });
+      }
+    });
+
+    return {
+      ok: true,
+      updatedCount: products.length,
+      productIds: products.map((product) => product.id),
+    };
+  }
+
+  async bulkRemove(dto: BulkDeleteProductsDto, actor?: JwtUserPayload) {
+    const { products } = await this.getAccessibleProductsOrFail(dto.productIds, actor);
+
+    await this.prisma.product.updateMany({
+      where: {
+        id: { in: products.map((product) => product.id) },
+      },
+      data: { isActive: false },
+    });
+
+    return {
+      ok: true,
+      deletedCount: products.length,
+      productIds: products.map((product) => product.id),
+    };
+  }
+
   async remove(productId: string, actor?: JwtUserPayload) {
     const product = await this.prisma.product.findUnique({ where: { id: productId } });
     if (!product) {
@@ -649,6 +722,33 @@ export class ProductsService {
     }
 
     return { matched: false, confidence: 0, product: null };
+  }
+
+  private async getAccessibleProductsOrFail(productIds: string[], actor?: JwtUserPayload) {
+    if (!actor) {
+      throw new ForbiddenException('Требуется авторизация');
+    }
+
+    const normalizedIds = [...new Set(productIds.map((item) => item.trim()).filter(Boolean))];
+
+    if (!normalizedIds.length) {
+      throw new BadRequestException('Список товаров пуст');
+    }
+
+    const products = await this.prisma.product.findMany({
+      where: {
+        id: { in: normalizedIds },
+        isActive: true,
+        ...(actor.role === UserRole.user ? { userId: actor.sub } : {}),
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (products.length !== normalizedIds.length) {
+      throw new NotFoundException('Часть товаров не найдена или недоступна');
+    }
+
+    return { products, productIds: normalizedIds };
   }
 
   private buildCompactContextPrompt(product: Product) {

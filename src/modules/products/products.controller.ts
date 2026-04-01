@@ -15,6 +15,8 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ImportCommitDto } from './dto/import-commit.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { BulkUpdateProductsDto } from './dto/bulk-update-products.dto';
+import { BulkDeleteProductsDto } from './dto/bulk-delete-products.dto';
 import { CreateProductDto } from './dto/create-product.dto';
 import { GenerateReplyContextDto } from './dto/generate-reply-context.dto';
 import { ProductsService } from './products.service';
@@ -47,6 +49,18 @@ export class ProductsController {
   commitImport(@Body() dto: ImportCommitDto, @CurrentUser() user: JwtUserPayload | null) {
     const userId = this.resolveUserId(user, dto.userId);
     return this.productsService.commitImport(userId, dto);
+  }
+
+  @Patch('bulk')
+  bulkUpdate(@Body() dto: BulkUpdateProductsDto, @CurrentUser() user: JwtUserPayload | null) {
+    this.resolveUserId(user);
+    return this.productsService.bulkUpdate(dto, user ?? undefined);
+  }
+
+  @Delete('bulk')
+  bulkRemove(@Body() dto: BulkDeleteProductsDto, @CurrentUser() user: JwtUserPayload | null) {
+    this.resolveUserId(user);
+    return this.productsService.bulkRemove(dto, user ?? undefined);
   }
 
   @Get('context-modes')

@@ -1,8 +1,21 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import OpenAI from 'openai';
+
+type LlmResult = {
+  text: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  latencyMs: number;
+};
 
 @Injectable()
 export class LlmService {
+  private readonly relayUrl = (process.env.AI_RELAY_URL || '').trim().replace(/\/+$/, '');
+  private readonly relaySecret = (process.env.AI_RELAY_SHARED_SECRET || '').trim();
+  private readonly relayTimeoutMs = Number(process.env.AI_RELAY_TIMEOUT_MS || 90000);
+
   private readonly client: OpenAI | null;
 
   constructor() {
@@ -11,8 +24,12 @@ export class LlmService {
       : null;
   }
 
-  async generateReply(prompt: string, modelOverride?: string) {
+  async generateReply(prompt: string, modelOverride?: string): Promise<LlmResult> {
     const model = modelOverride || process.env.OPENAI_MODEL || 'gpt-5.4-mini';
+
+    if (this.relayUrl) {
+      return this.generateViaRelay(prompt, model);
+    }
 
     if (!this.client) {
       const fallback = this.buildFallbackReply(prompt);
@@ -27,7 +44,6 @@ export class LlmService {
     }
 
     const startedAt = Date.now();
-
     const response = await this.client.responses.create({
       model,
       input: prompt,
@@ -35,12 +51,57 @@ export class LlmService {
 
     return {
       text: response.output_text.trim(),
-      model,
+      model: String((response as any).model || model),
       promptTokens: response.usage?.input_tokens || 0,
       completionTokens: response.usage?.output_tokens || 0,
-      totalTokens: (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0),
+      totalTokens:
+        (response.usage?.input_tokens || 0) +
+        (response.usage?.output_tokens || 0),
       latencyMs: Date.now() - startedAt,
     };
+  }
+
+  private async generateViaRelay(prompt: string, model: string): Promise<LlmResult> {
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.relayTimeoutMs);
+
+    try {
+      const response = await fetch(`${this.relayUrl}/v1/internal/llm/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': this.relaySecret,
+          'x-source-service': 'ozon-review-core',
+        },
+        body: JSON.stringify({
+          prompt,
+          model,
+        }),
+        signal: controller.signal,
+      });
+
+      const raw = await response.text();
+
+      if (!response.ok) {
+        throw new Error(`Relay error ${response.status}: ${raw}`);
+      }
+
+      const data = JSON.parse(raw) as Partial<LlmResult>;
+
+      return {
+        text: String(data.text || '').trim(),
+        model: String(data.model || model),
+        promptTokens: Number(data.promptTokens || 0),
+        completionTokens: Number(data.completionTokens || 0),
+        totalTokens: Number(data.totalTokens || 0),
+        latencyMs: Number(data.latencyMs || Date.now() - startedAt),
+      };
+    } catch (_error) {
+      throw new ServiceUnavailableException('LLM relay временно недоступен');
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private buildFallbackReply(prompt: string) {
