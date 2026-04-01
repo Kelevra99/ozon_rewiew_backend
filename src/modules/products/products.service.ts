@@ -597,9 +597,16 @@ export class ProductsService {
   }
 
   async bulkUpdate(dto: BulkUpdateProductsDto, actor?: JwtUserPayload) {
-    const hasUpdatableField = ['brand', 'model', 'productRules', 'annotation'].some((field) =>
-      this.hasField(dto, field),
-    );
+    const shouldUpdateBrand = dto.brand !== undefined;
+    const shouldUpdateModel = dto.model !== undefined;
+    const shouldUpdateProductRules = dto.productRules !== undefined;
+    const shouldUpdateAnnotation = dto.annotation !== undefined;
+
+    const hasUpdatableField =
+      shouldUpdateBrand ||
+      shouldUpdateModel ||
+      shouldUpdateProductRules ||
+      shouldUpdateAnnotation;
 
     if (!hasUpdatableField) {
       throw new BadRequestException('Не передано ни одного поля для массового обновления');
@@ -609,12 +616,12 @@ export class ProductsService {
 
     await this.prisma.$transaction(async (tx) => {
       for (const product of products) {
-        const nextBrand = this.hasField(dto, 'brand') ? this.getString(dto.brand) : product.brand;
-        const nextModel = this.hasField(dto, 'model') ? this.getString(dto.model) : product.model;
-        const nextAnnotation = this.hasField(dto, 'annotation')
+        const nextBrand = shouldUpdateBrand ? this.getString(dto.brand) : product.brand;
+        const nextModel = shouldUpdateModel ? this.getString(dto.model) : product.model;
+        const nextAnnotation = shouldUpdateAnnotation
           ? this.getString(dto.annotation)
           : product.annotation;
-        const nextProductRules = this.hasField(dto, 'productRules')
+        const nextProductRules = shouldUpdateProductRules
           ? this.getString(dto.productRules)
           : product.productRules;
 
@@ -630,15 +637,35 @@ export class ProductsService {
           extra2Value: product.extra2Value,
         });
 
+        const updateData: {
+          brand?: string | null;
+          model?: string | null;
+          annotation?: string | null;
+          productRules?: string | null;
+          searchText: string;
+        } = {
+          searchText,
+        };
+
+        if (shouldUpdateBrand) {
+          updateData.brand = nextBrand;
+        }
+
+        if (shouldUpdateModel) {
+          updateData.model = nextModel;
+        }
+
+        if (shouldUpdateAnnotation) {
+          updateData.annotation = nextAnnotation;
+        }
+
+        if (shouldUpdateProductRules) {
+          updateData.productRules = nextProductRules;
+        }
+
         await tx.product.update({
           where: { id: product.id },
-          data: {
-            brand: nextBrand,
-            model: nextModel,
-            annotation: nextAnnotation,
-            productRules: nextProductRules,
-            searchText,
-          },
+          data: updateData,
         });
       }
     });
