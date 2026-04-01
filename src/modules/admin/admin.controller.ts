@@ -9,6 +9,7 @@ import { AdminService } from './admin.service';
 import { AdjustWalletDto } from './dto/adjust-wallet.dto';
 import { CreateExchangeRateDto } from './dto/create-exchange-rate.dto';
 import { UpsertServiceTierDto } from './dto/upsert-service-tier.dto';
+import { SetUserPasswordDto } from './dto/set-user-password.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -39,6 +40,15 @@ export class AdminController {
   @Get('users/:id/reviews')
   userReviews(@Param('id') userId: string) {
     return this.adminService.getUserReviews(userId);
+  }
+
+  @Post('users/:id/password')
+  setUserPassword(
+    @CurrentUser() admin: JwtUserPayload,
+    @Param('id') userId: string,
+    @Body() dto: SetUserPasswordDto,
+  ) {
+    return this.adminService.setUserPassword(admin.sub, userId, dto);
   }
 
   @Get('reviews')

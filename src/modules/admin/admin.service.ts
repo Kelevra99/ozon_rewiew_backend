@@ -1,11 +1,13 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BillingService } from '../billing/billing.service';
+import { hashPassword } from '../../common/password.util';
 import { ExchangeRatesService } from '../exchange-rates/exchange-rates.service';
 import { ServiceTiersService } from '../service-tiers/service-tiers.service';
 import { AdjustWalletDto } from './dto/adjust-wallet.dto';
 import { CreateExchangeRateDto } from './dto/create-exchange-rate.dto';
 import { UpsertServiceTierDto } from './dto/upsert-service-tier.dto';
+import { SetUserPasswordDto } from './dto/set-user-password.dto';
 
 type AdminDashboardDailyRow = {
   date: string;
@@ -322,6 +324,59 @@ export class AdminService {
     }
 
     return payment;
+  }
+
+
+  async setUserPassword(adminUserId: string, userId: string, dto: SetUserPasswordDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Пользователь не найден');
+    }
+
+    const password = dto.password.trim();
+
+    if (!password) {
+      throw new BadRequestException('Пароль не может быть пустым');
+    }
+
+    const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS || 10);
+    const passwordHash = await hashPassword(password, saltRounds);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        passwordHash,
+        updatedAt: new Date(),
+      },
+    });
+
+    await this.prisma.adminAuditLog.create({
+      data: {
+        adminUserId,
+        action: 'user.password.set',
+        entityType: 'user',
+        entityId: userId,
+        afterJson: this.toJson({
+          userId,
+          email: user.email,
+          passwordChanged: true,
+        }),
+      },
+    });
+
+    return {
+      ok: true,
+      userId,
+      email: user.email,
+    };
   }
 
   adjustWallet(adminUserId: string, dto: AdjustWalletDto) {
