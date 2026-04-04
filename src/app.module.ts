@@ -4,6 +4,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ApiKeysModule } from './modules/api-keys/api-keys.module';
+import { ExternalProviderCredentialsModule } from './modules/external-provider-credentials/external-provider-credentials.module';
 import { ExtensionModule } from './modules/extension/extension.module';
 import { ProductsModule } from './modules/products/products.module';
 import { RepliesModule } from './modules/replies/replies.module';
@@ -22,6 +23,7 @@ import { AdminModule } from './modules/admin/admin.module';
     HealthModule,
     AuthModule,
     ApiKeysModule,
+    ExternalProviderCredentialsModule,
     ExtensionModule,
     ProductsModule,
     RepliesModule,

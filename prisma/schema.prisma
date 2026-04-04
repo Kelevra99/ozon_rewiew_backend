@@ -76,6 +76,12 @@ enum PaymentWebhookStatus {
   failed
 }
 
+enum ExternalProvider {
+  ozon
+  wildberries
+  yandex_market
+}
+
 model User {
   id                         String     @id @default(cuid())
   email                      String     @unique
@@ -96,6 +102,7 @@ model User {
   updatedAt                  DateTime   @updatedAt
 
   apiKeys                  ApiKey[]
+  externalProviderCredentials ExternalProviderCredential[]
   imports                  ProductImport[]
   importDrafts             ProductImportDraft[]
   products                 Product[]
@@ -125,6 +132,26 @@ model ApiKey {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+}
+
+model ExternalProviderCredential {
+  id              String           @id @default(cuid())
+  userId          String
+  provider        ExternalProvider
+  encryptedSecret String
+  secretIv        String
+  secretAuthTag   String
+  maskedValue     String?
+  isActive        Boolean          @default(true)
+  lastValidatedAt DateTime?
+  lastUsedAt      DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
   @@index([userId])
 }
 
