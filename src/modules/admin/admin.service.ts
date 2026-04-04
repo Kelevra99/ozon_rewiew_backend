@@ -379,6 +379,57 @@ export class AdminService {
     };
   }
 
+  async deleteUser(adminUserId: string, userId: string) {
+    if (adminUserId === userId) {
+      throw new BadRequestException('Нельзя удалить самого себя из текущей админской сессии');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Пользователь не найден');
+    }
+
+    if (user.role === 'superadmin') {
+      throw new BadRequestException('Нельзя удалить superadmin через этот интерфейс');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.adminAuditLog.create({
+        data: {
+          adminUserId,
+          action: 'user.delete',
+          entityType: 'user',
+          entityId: userId,
+          beforeJson: this.toJson({
+            userId: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role,
+          }),
+        },
+      });
+
+      await tx.user.delete({
+        where: { id: userId },
+      });
+    });
+
+    return {
+      ok: true,
+      deletedUserId: user.id,
+      deletedEmail: user.email,
+    };
+  }
+
   adjustWallet(adminUserId: string, dto: AdjustWalletDto) {
     return this.billingService.adjustWallet({
       userId: dto.userId,

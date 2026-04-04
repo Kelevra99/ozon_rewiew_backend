@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -49,6 +49,14 @@ export class AdminController {
     @Body() dto: SetUserPasswordDto,
   ) {
     return this.adminService.setUserPassword(admin.sub, userId, dto);
+  }
+
+  @Delete('users/:id')
+  deleteUser(
+    @CurrentUser() admin: JwtUserPayload,
+    @Param('id') userId: string,
+  ) {
+    return this.adminService.deleteUser(admin.sub, userId);
   }
 
   @Get('reviews')
