@@ -1,5 +1,17 @@
-import { Body, Controller, Headers, Post, UnauthorizedException } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Headers,
+  Post,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { JwtUserPayload } from '../../common/authenticated-user.interface';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { GenerateReplyDto } from './dto/generate-reply.dto';
+import { GenerateManualReplyDto } from './dto/generate-manual-reply.dto';
+import { PreviewManualReplyDto } from './dto/preview-manual-reply.dto';
 import { ReplyResultDto } from './dto/reply-result.dto';
 import { RepliesService } from './replies.service';
 
@@ -19,6 +31,24 @@ export class RepliesController {
     }
 
     return this.repliesService.generate(dto, apiKey);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('manual/preview')
+  previewManual(
+    @CurrentUser() user: JwtUserPayload,
+    @Body() dto: PreviewManualReplyDto,
+  ) {
+    return this.repliesService.previewManual(user.sub, dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('manual/generate')
+  generateManual(
+    @CurrentUser() user: JwtUserPayload,
+    @Body() dto: GenerateManualReplyDto,
+  ) {
+    return this.repliesService.generateManual(user.sub, dto);
   }
 
   @Post('result')

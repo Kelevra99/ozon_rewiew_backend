@@ -1,15 +1,24 @@
-import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { randomBytes } from 'crypto';
+import type { JwtUserPayload } from '../../common/authenticated-user.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ApiKeysService } from '../api-keys/api-keys.service';
-import { ProductsService } from '../products/products.service';
 import { BillingService } from '../billing/billing.service';
 import { ExchangeRatesService } from '../exchange-rates/exchange-rates.service';
+import { ProductsService } from '../products/products.service';
 import { ServiceTiersService } from '../service-tiers/service-tiers.service';
 import { GenerateReplyDto } from './dto/generate-reply.dto';
+import { GenerateManualReplyDto } from './dto/generate-manual-reply.dto';
+import { PreviewManualReplyDto } from './dto/preview-manual-reply.dto';
 import { ReplyResultDto } from './dto/reply-result.dto';
-import { PromptBuilderService } from './prompt-builder.service';
 import { LlmService } from './llm.service';
+import { PromptBuilderService } from './prompt-builder.service';
 
 @Injectable()
 export class RepliesService {
@@ -151,6 +160,146 @@ export class RepliesService {
     };
   }
 
+  async previewManual(userId: string, dto: PreviewManualReplyDto) {
+    const user = await this.getManualUser(userId);
+    const product = await this.getManualProduct(userId, dto.productId);
+
+    const prompt = this.promptBuilderService.build({
+      user,
+      product,
+      rating: dto.rating,
+      reviewText: dto.reviewText,
+      productName: product.name,
+      mode: dto.mode,
+    });
+
+    return {
+      selectedProduct: {
+        id: product.id,
+        name: product.name,
+        article: product.article,
+      },
+      mode: dto.mode,
+      rating: dto.rating,
+      reviewText: dto.reviewText?.trim() || '',
+      systemPrompt: prompt.systemPrompt,
+      assembledPrompt: prompt.assembledPrompt,
+      fullPrompt: prompt.fullPrompt,
+      productContextJson: prompt.productContextJson,
+    };
+  }
+
+  async generateManual(userId: string, dto: GenerateManualReplyDto) {
+    const user = await this.getManualUser(userId);
+    const product = await this.getManualProduct(userId, dto.productId);
+
+    await this.billingService.ensurePositiveBalance(user.id);
+
+    const serviceTier = await this.serviceTiersService.getActiveTierByCode(dto.mode);
+    const exchangeRate = await this.exchangeRatesService.getActiveRate();
+
+    const prompt = this.promptBuilderService.build({
+      user,
+      product,
+      rating: dto.rating,
+      reviewText: dto.reviewText,
+      productName: product.name,
+      mode: dto.mode,
+    });
+
+    const llm = await this.llmService.generateReply(prompt.fullPrompt, serviceTier.openAiModel);
+    const reviewExternalId = this.generateManualReviewExternalId();
+
+    const persisted = await this.prisma.$transaction(async (tx) => {
+      const reviewLog = await tx.reviewLog.create({
+        data: {
+          userId: user.id,
+          productId: product.id,
+          source: 'manual-cabinet',
+          reviewExternalId,
+          rating: dto.rating,
+          authorName: dto.authorName,
+          reviewText: dto.reviewText,
+          reviewDate: dto.reviewDate,
+          detectedProductName: product.name,
+          detectedProductMeta: {
+            source: 'manual-cabinet',
+            productId: product.id,
+            article: product.article,
+          } as object,
+          promptMode: dto.mode,
+          generatedReply: llm.text,
+          finalReply: llm.text,
+        },
+      });
+
+      await tx.usageLog.create({
+        data: {
+          userId: user.id,
+          reviewLogId: reviewLog.id,
+          model: llm.model,
+          promptTokens: llm.promptTokens,
+          completionTokens: llm.completionTokens,
+          totalTokens: llm.totalTokens,
+          estimatedCost: new Prisma.Decimal(
+            this.estimateCostUsd(serviceTier, llm.promptTokens, llm.completionTokens).toFixed(8),
+          ),
+          latencyMs: llm.latencyMs,
+        },
+      });
+
+      await tx.promptLog.create({
+        data: {
+          userId: user.id,
+          reviewLogId: reviewLog.id,
+          serviceTierCode: serviceTier.code,
+          model: llm.model,
+          systemPrompt: prompt.systemPrompt,
+          assembledPrompt: prompt.assembledPrompt,
+          generatedReply: llm.text,
+          productContextJson: prompt.productContextJson,
+        },
+      });
+
+      const billing = await this.billingService.chargeForGeneratedReview(tx, {
+        userId: user.id,
+        reviewLog,
+        serviceTier,
+        exchangeRate: { id: exchangeRate.id, rate: exchangeRate.rate },
+        model: llm.model,
+        inputTokens: llm.promptTokens,
+        outputTokens: llm.completionTokens,
+        totalTokens: llm.totalTokens,
+      });
+
+      return { reviewLog, billing };
+    });
+
+    return {
+      reviewLogId: persisted.reviewLog.id,
+      generatedReply: llm.text,
+      selectedProduct: {
+        id: product.id,
+        name: product.name,
+        article: product.article,
+      },
+      model: llm.model,
+      tokenUsage: {
+        promptTokens: llm.promptTokens,
+        completionTokens: llm.completionTokens,
+        totalTokens: llm.totalTokens,
+      },
+      warnings: [],
+      canAutopost: false,
+      billing: {
+        chargedMinor: persisted.billing.chargedMinor,
+        chargedRub: persisted.billing.chargedRub,
+        balanceAfterMinor: persisted.billing.balanceAfterMinor,
+        balanceAfterRub: persisted.billing.balanceAfterMinor / 100,
+      },
+    };
+  }
+
   async setResult(dto: ReplyResultDto) {
     const reviewLog = await this.prisma.reviewLog.findUnique({
       where: { id: dto.reviewLogId },
@@ -168,6 +317,50 @@ export class RepliesService {
         errorText: dto.errorText,
       },
     });
+  }
+
+  private async getManualUser(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        defaultTone: true,
+        toneNotes: true,
+        brandRules: true,
+        isActive: true,
+      },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Пользователь не найден');
+    }
+
+    if (!user.isActive) {
+      throw new ForbiddenException('Пользователь деактивирован');
+    }
+
+    return user;
+  }
+
+  private async getManualProduct(userId: string, productId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: {
+        id: productId,
+        userId,
+        isActive: true,
+      },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Товар не найден');
+    }
+
+    return product;
+  }
+
+  private generateManualReviewExternalId() {
+    return `manual_${Date.now()}_${randomBytes(6).toString('hex')}`;
   }
 
   private normalizeProductMeta(dto: GenerateReplyDto): Record<string, unknown> | null {
@@ -222,9 +415,19 @@ export class RepliesService {
     return normalized;
   }
 
-  private estimateCostUsd(serviceTier: { inputPriceUsdPer1m: Prisma.Decimal; outputPriceUsdPer1m: Prisma.Decimal }, promptTokens: number, completionTokens: number): number {
-    const promptCost = (promptTokens / 1_000_000) * Number(serviceTier.inputPriceUsdPer1m);
-    const completionCost = (completionTokens / 1_000_000) * Number(serviceTier.outputPriceUsdPer1m);
+  private estimateCostUsd(
+    serviceTier: {
+      inputPriceUsdPer1m: Prisma.Decimal;
+      outputPriceUsdPer1m: Prisma.Decimal;
+    },
+    promptTokens: number,
+    completionTokens: number,
+  ): number {
+    const promptCost =
+      (promptTokens / 1_000_000) * Number(serviceTier.inputPriceUsdPer1m);
+    const completionCost =
+      (completionTokens / 1_000_000) * Number(serviceTier.outputPriceUsdPer1m);
+
     return Number((promptCost + completionCost).toFixed(8));
   }
 }
